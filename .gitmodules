@@ -1,0 +1,3 @@
+[submodule "glibc"]
+	path = glibc
+	url = ../glibc

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log"
 	"net"
+	"os"
 )
 
 var (
@@ -14,15 +15,18 @@ var (
 
 func main() {
 	flag.Parse()
-	m2s := make(chan []byte)
-	s2m := make(chan []byte)
-	errch := make(chan error)
+	for {
+		m2s := make(chan []byte)
+		s2m := make(chan []byte)
+		errch := make(chan error)
 
-	go doRelay("master", m2s, s2m, errch)
-	go doRelay("slave", s2m, m2s, errch)
-	err := <- errch
-	log.Fatalf("Error ", err)
-
+		go doRelay("back", m2s, s2m, errch)
+		go doRelay("front", s2m, m2s, errch)
+		err := <- errch
+		log.Printf("Error ", err)
+		os.Remove("back");
+		os.Remove("front");
+	}
 }
 
 
@@ -33,9 +37,9 @@ func relayConnToCh (errch chan error, ch chan []byte, conn net.Conn) {
 		n, err := conn.Read(buf)
 		if err != nil {
 			errch <- err
-			return
+			continue;
 		}
-		log.Printf("Read %d from master",n) 
+		log.Printf("Read %d from conn",n) 
 		flag[0] = 0;
 		binary.LittleEndian.PutUint32(flag[1:], uint32(n))
 		ch <- flag
@@ -53,7 +57,7 @@ func relayChToConn (errch chan error, ch chan []byte, conn net.Conn) {
 			n, err := conn.Write(buf)
 			if err != nil {
 				errch <- err
-				return
+				break;
 			}
 			log.Printf("Wrote %d",n) 
 			left -= n
@@ -80,3 +84,4 @@ func doRelay(name string, m2s, s2m chan []byte, errch chan error) {
 		go relayChToConn(errch, s2m, conn)
 	}
 }
+
