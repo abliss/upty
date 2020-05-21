@@ -19,7 +19,8 @@ func main() {
 		m2s := make(chan []byte)
 		s2m := make(chan []byte)
 		errch := make(chan error)
-
+		os.Remove("back");
+		os.Remove("front");
 		go doRelay("back", m2s, s2m, errch)
 		go doRelay("front", s2m, m2s, errch)
 		err := <- errch
@@ -39,7 +40,8 @@ func relayConnToCh (errch chan error, ch chan []byte, conn net.Conn) {
 			errch <- err
 			continue;
 		}
-		log.Printf("Read %d from conn",n) 
+		log.Printf("Read %d from conn: %s",n, buf[0:n])
+		
 		flag[0] = 0;
 		binary.LittleEndian.PutUint32(flag[1:], uint32(n))
 		ch <- flag
@@ -53,15 +55,22 @@ func relayChToConn (errch chan error, ch chan []byte, conn net.Conn) {
 		_ = flag
 		buf := <- ch
 		left := len(buf)
+		mybuf := buf
 		for (left > 0) {
-			n, err := conn.Write(buf)
+			n, err := conn.Write(mybuf)
 			if err != nil {
 				errch <- err
 				break;
 			}
-			log.Printf("Wrote %d",n) 
 			left -= n
-			buf = buf[n:]
+			log.Printf("Wrote %d, first %d, %d more", n, mybuf[0], left) 
+			mybuf = mybuf[n:]
+		}
+		if (len(buf) == 1 && buf[0] == 13) {
+			//XXX
+			buf[0] = 10
+			conn.Write(buf)
+			log.Printf("Wrote extra newline") 
 		}
 	}
 }

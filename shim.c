@@ -243,3 +243,15 @@ int unlockpt (int fd) {
     return ((unlockpt_t)dlsym(RTLD_NEXT, "unlockpt"))(fd);
   }
 }
+
+typedef char* (*ttyname_t)(int);
+char* ttyname (int fd) {
+  debug("XXXX Intercepted ttyname : %d\n", fd);
+  if (fd == fake_back_fd) {
+    return "back";
+  } else if (fd == fake_front_fd) {
+    return "front";
+  } else {
+    return ((ttyname_t)dlsym(RTLD_NEXT, "ttyname"))(fd);
+  }
+}
