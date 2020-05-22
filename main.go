@@ -40,7 +40,11 @@ func relayConnToCh (errch chan error, ch chan []byte, conn net.Conn) {
 			errch <- err
 			continue;
 		}
-		log.Printf("Read %d from conn: %s",n, buf[0:n])
+		m := n;
+		if m > 10 {
+			m = 40;
+		}
+		log.Printf("Read %d from conn: %s",n, buf[0:m])
 		
 		flag[0] = 0;
 		binary.LittleEndian.PutUint32(flag[1:], uint32(n))

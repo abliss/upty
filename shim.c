@@ -12,10 +12,8 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-int fake_back_fd = -1;
-int fake_front_fd = -1;
+#define pty_debug(...) fprintf(stderr, __VA_ARGS__)
 
-#define debug printf
 /*
 int fcntl(int fd, int cmd, ... ) {
  
@@ -26,8 +24,31 @@ int openpty(int *amaster, int *aslave, char *name,
             const struct winsize *winp) {
 }
 */
+static const char* env_var_format = "__PYTD_NUM_%d";
+int set_ptyd_num(int fd, int ptyd_num) {
+  char key[30];
+  char val[12];
+  snprintf(key, sizeof(key), env_var_format, fd);
+  snprintf(val, sizeof(val), "%d", ptyd_num);
+  int ret = setenv(key, val, 1);
+  if (ret < 0) {
+    perror("error in setenv");
+  }
+  return ret;
+}
+
+int get_ptyd_num(int fd) {
+  char key[30];
+  snprintf(key, sizeof(key), env_var_format, fd);
+  char* val = getenv(key);
+  if (val) {
+    return atoi(val);
+  } else {
+    return -1;
+  }
+}
 int getpt() {
-  debug("XXXX Intercepted getpt\n");
+  pty_debug("XXXX Intercepted getpt\n");
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);
   struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
@@ -37,8 +58,8 @@ int getpt() {
     perror("error connecting to back");
     exit(-1);
   }
-  fake_back_fd = fd;
-  debug("XXXX Returning fake back %d\n", fd);
+  set_ptyd_num(fd, 1);
+  pty_debug("XXXX Returning fake back %d\n", fd);
   return fd;
 }
 
@@ -50,12 +71,13 @@ int ioctl1(int fd, unsigned long int request, unsigned long int  data) {
 
 //int ioctl(int fd, unsigned long request, void* arg1) {
 int ioctl(int fd, unsigned long int  request, ...) {
-  debug("XXXX Intercepted ioctl: %d==%d %lu\n", fd, fake_back_fd, request);
+  pty_debug("XXXX Intercepted ioctl: %d==%d %lu\n", 
+            fd, get_ptyd_num(fd), request);
   va_list ap;
   va_start(ap, request);
   unsigned long int arg1 = va_arg (ap, unsigned long int);
   va_end(ap);
-  if ((fd != fake_back_fd) && (fd != fake_front_fd)) {
+  if (get_ptyd_num(fd) < 0) {
     return ioctl1(fd, request, arg1);
   }
   switch(request) {
@@ -69,15 +91,17 @@ int ioctl(int fd, unsigned long int  request, ...) {
       perror("error connecting to front");
       exit(-1);
     }
-    fake_front_fd = front_fd;
-    debug("XXXX Returning fake front %d\n", front_fd);
+    set_ptyd_num(front_fd, 2);
+    pty_debug("XXXX Returning fake front %d\n", front_fd);
     return front_fd;
   }
   case TIOCGPTN: {
     // see ptsname.c
     // arg1 is a pointer to an unsigned int pty number.
     int* outptr = (int*) arg1;
-    *outptr = fake_back_fd;
+    int num = get_ptyd_num(fd);
+    pty_debug("XXXX TIOCGPTN: Returning ptyd num %d\n", num);
+    *outptr = num;
     return 0;
   }
   case TIOCSCTTY: {
@@ -126,62 +150,63 @@ int ioctl(int fd, unsigned long int  request, ...) {
   case TIOCSETD:
   case TIOCGETD:
   case TCSBRKP:
-    case TIOCSBRK:
-    case TIOCCBRK:
-    case TIOCGSID:
-      /*
-    case TCGETS2:
-    case TCSETS2:
-    case TCSETSW2:
-    case TCSETSF2:
-      */
-    case TIOCGRS485:
-    case TIOCSPTLCK:
-    case TIOCGDEV:
-    case TCGETX:
-    case TCSETX:
-    case TCSETXF:
-    case TCSETXW:
-    case TIOCSIG:
-    case TIOCVHANGUP:
-    case TIOCGPKT:
-    case TIOCGPTLCK:
-    case TIOCGEXCL:
-    case FIONCLEX:
-    case FIOCLEX:
-    case FIOASYNC:
-    case TIOCSERCONFIG:
-    case TIOCSERGWILD:
-    case TIOCSERSWILD:
-    case TIOCGLCKTRMIOS:
-    case TIOCSLCKTRMIOS:
-    case TIOCSERGSTRUCT:
-    case TIOCSERGETLSR:
-    case TIOCSERGETMULTI:
-    case TIOCSERSETMULTI:
-    case TIOCMIWAIT:
-    case TIOCGICOUNT:
-    case TIOCPKT_DATA:
-    case TIOCPKT_FLUSHREAD: // aka TIOCSER_TEMT
-    case TIOCPKT_FLUSHWRITE:
-    case TIOCPKT_STOP:
-    case TIOCPKT_START:
-    case TIOCPKT_NOSTOP:
-    case TIOCPKT_DOSTOP:
-    case TIOCPKT_IOCTL:
-      debug("XXXX Ioctl not implemented : %lu\n", arg1);
-      return 0;
-    default:
-      debug("XXXX Unknown ioctl : %lu\n", arg1);
-      return 0;
-  }
+  case TIOCSBRK:
+  case TIOCCBRK:
+  case TIOCGSID:
+    /*
+      case TCGETS2:
+      case TCSETS2:
+      case TCSETSW2:
+      case TCSETSF2:
+    */
+  case TIOCGRS485:
+  case TIOCSPTLCK:
+  case TIOCGDEV:
+  case TCGETX:
+  case TCSETX:
+  case TCSETXF:
+  case TCSETXW:
+  case TIOCSIG:
+  case TIOCVHANGUP:
+  case TIOCGPKT:
+  case TIOCGPTLCK:
+  case TIOCGEXCL:
+  case FIONCLEX:
+  case FIOCLEX:
+  case FIOASYNC:
+  case TIOCSERCONFIG:
+  case TIOCSERGWILD:
+  case TIOCSERSWILD:
+  case TIOCGLCKTRMIOS:
+  case TIOCSLCKTRMIOS:
+  case TIOCSERGSTRUCT:
+  case TIOCSERGETLSR:
+  case TIOCSERGETMULTI:
+  case TIOCSERSETMULTI:
+  case TIOCMIWAIT:
+  case TIOCGICOUNT:
+  case TIOCPKT_DATA:
+  case TIOCPKT_FLUSHREAD: // aka TIOCSER_TEMT
+  case TIOCPKT_FLUSHWRITE:
+  case TIOCPKT_STOP:
+  case TIOCPKT_START:
+  case TIOCPKT_NOSTOP:
+  case TIOCPKT_DOSTOP:
+  case TIOCPKT_IOCTL:
+    pty_debug("XXXX Ioctl not implemented : %lu\n", arg1);
+    return 0;
+  default:
+    pty_debug("XXXX Unknown ioctl : %lu\n", arg1);
+    return 0;}
+  
 }
 
 
 typedef int (*isatty_t)(int);
 int isatty(int fd) {
-  debug("XXXX Intercepted isatty : %d\n", fd);
-  if ((fd != fake_back_fd) && (fd != fake_front_fd)) {
+  int ptyd_num = get_ptyd_num(fd);
+  pty_debug("XXXX Intercepted isatty(%d)==%d\n", fd, ptyd_num);
+  if (ptyd_num < 0) {
     return ((isatty_t)dlsym(RTLD_NEXT, "isatty"))(fd);
   }
   return 1;
@@ -192,11 +217,10 @@ int __isatty(int fd) {
 
 typedef char* (*ptsname_t)(int);
 char* ptsname (int fd) {
-  debug("XXXX Intercepted ptsname : %d\n", fd);
-  if (fd == fake_back_fd) {
-    return "fake_back";
-  } else if (fd == fake_front_fd) {
-    return "fake_front";
+  int ptyd_num = get_ptyd_num(fd);
+  pty_debug("XXXX Intercepted ptsname(%d)==%d\n", fd, ptyd_num);
+  if (ptyd_num >= 0) {
+    return "fake_ptyd";
   } else {
     return ((ptsname_t)dlsym(RTLD_NEXT, "ptsname"))(fd);
   }
@@ -208,13 +232,10 @@ char* ptsname (int fd) {
 typedef int (*ptsname_r_t)(int, char*, size_t);
 
 int ptsname_r (int fd, char *buf, size_t buflen) {
-  debug("XXXX Intercepted ptsname_r : %d\n", fd);
-  if (fd == fake_back_fd) {
-    strncpy(buf, "fake_back", buflen);
-    return 0;
-  } else if (fd == fake_front_fd) {
-    strncpy(buf, "fake_front", buflen);
-    return 0;
+  int ptyd_num = get_ptyd_num(fd);
+  pty_debug("XXXX Intercepted ptsname_r(%d)==%d\n", fd, ptyd_num);
+  if (ptyd_num >= 0) {
+    strncpy(buf, "fake_ptyd", buflen);
   } else {
     return ((ptsname_r_t)dlsym(RTLD_NEXT, "ptsname_r"))(fd, buf, buflen);
   }
@@ -222,10 +243,9 @@ int ptsname_r (int fd, char *buf, size_t buflen) {
 
 typedef int (*grantpt_t)(int);
 int grantpt (int fd) {
-  debug("XXXX Intercepted grantpt : %d\n", fd);
-  if (fd == fake_back_fd) {
-    return 0;
-  } else if (fd == fake_front_fd) {
+  int ptyd_num = get_ptyd_num(fd);
+  pty_debug("XXXX Intercepted grantpt(%d)==%d\n", fd, ptyd_num);
+  if (ptyd_num >= 0) {
     return 0;
   } else {
     return ((grantpt_t)dlsym(RTLD_NEXT, "grantpt"))(fd);
@@ -234,10 +254,9 @@ int grantpt (int fd) {
 
 typedef int (*unlockpt_t)(int);
 int unlockpt (int fd) {
-  debug("XXXX Intercepted unlockpt : %d\n", fd);
-  if (fd == fake_back_fd) {
-    return 0;
-  } else if (fd == fake_front_fd) {
+  int ptyd_num = get_ptyd_num(fd);
+  pty_debug("XXXX Intercepted unlockpt(%d)==%d\n", fd, ptyd_num);
+  if (ptyd_num >= 0) {
     return 0;
   } else {
     return ((unlockpt_t)dlsym(RTLD_NEXT, "unlockpt"))(fd);
@@ -246,12 +265,60 @@ int unlockpt (int fd) {
 
 typedef char* (*ttyname_t)(int);
 char* ttyname (int fd) {
-  debug("XXXX Intercepted ttyname : %d\n", fd);
-  if (fd == fake_back_fd) {
-    return "back";
-  } else if (fd == fake_front_fd) {
-    return "front";
+  int ptyd_num = get_ptyd_num(fd);
+  pty_debug("XXXX Intercepted ttyname(%d)==%d\n", fd, ptyd_num);
+  if (ptyd_num >= 0) {
+    return "fake_ptyd";
   } else {
     return ((ttyname_t)dlsym(RTLD_NEXT, "ttyname"))(fd);
   }
+}
+
+
+typedef int (*dup_t)(int);
+int dup(int fd) {
+  int ptyd_num = get_ptyd_num(fd);
+  pty_debug("XXXX Intercepted dup(%d)==%d\n", fd, ptyd_num);
+  int dup_fd = ((dup_t)dlsym(RTLD_NEXT, "dup"))(fd);
+  if (ptyd_num >= 0) {
+    if (dup_fd >= 0) {
+      set_ptyd_num(dup_fd, ptyd_num);
+    }
+  }
+  return dup_fd;
+}
+typedef int (*dup2_t)(int, int);
+int dup2(int fd, int newfd) {
+  int ptyd_num = get_ptyd_num(fd);
+  pty_debug("XXXX Intercepted dup2(%d)==%d\n", fd, ptyd_num);
+  int dup_fd = ((dup2_t)dlsym(RTLD_NEXT, "dup2"))(fd, newfd);
+  if (ptyd_num >= 0) {
+    if (dup_fd >= 0) {
+      set_ptyd_num(dup_fd, ptyd_num);
+    }
+  }
+  return dup_fd;
+}
+typedef int (*dup3_t)(int, int, int);
+int dup3(int fd, int newfd, int flags) {
+  int ptyd_num = get_ptyd_num(fd);
+  pty_debug("XXXX Intercepted dup3(%d)==%d\n", fd, ptyd_num);
+  int dup_fd = ((dup3_t)dlsym(RTLD_NEXT, "dup3"))(fd, newfd, flags);
+  if (ptyd_num >= 0) {
+    if (dup_fd >= 0) {
+      set_ptyd_num(dup_fd, ptyd_num);
+    }
+  }
+  return dup_fd;
+  
+}
+
+typedef int (*close_t)(int);
+int close(int fd) {
+  int ptyd_num = get_ptyd_num(fd);
+  pty_debug("XXXX Intercepted close(%d)==%d\n", fd, ptyd_num);
+  if (ptyd_num >= 0) {
+    set_ptyd_num(fd, -1);
+  }
+  return ((close_t)dlsym(RTLD_NEXT, "close"))(fd);
 }
