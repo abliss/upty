@@ -71,13 +71,14 @@ int ioctl1(int fd, unsigned long int request, unsigned long int  data) {
 
 //int ioctl(int fd, unsigned long request, void* arg1) {
 int ioctl(int fd, unsigned long int  request, ...) {
+  int ptyd_num = get_ptyd_num(fd);
   pty_debug("XXXX Intercepted ioctl: %d==%d %lu\n", 
-            fd, get_ptyd_num(fd), request);
+            fd, ptyd_num, request);
   va_list ap;
   va_start(ap, request);
   unsigned long int arg1 = va_arg (ap, unsigned long int);
   va_end(ap);
-  if (get_ptyd_num(fd) < 0) {
+  if (ptyd_num < 0) {
     return ioctl1(fd, request, arg1);
   }
   switch(request) {
@@ -236,6 +237,7 @@ int ptsname_r (int fd, char *buf, size_t buflen) {
   pty_debug("XXXX Intercepted ptsname_r(%d)==%d\n", fd, ptyd_num);
   if (ptyd_num >= 0) {
     strncpy(buf, "fake_ptyd", buflen);
+    return 0;
   } else {
     return ((ptsname_r_t)dlsym(RTLD_NEXT, "ptsname_r"))(fd, buf, buflen);
   }
@@ -321,4 +323,14 @@ int close(int fd) {
     set_ptyd_num(fd, -1);
   }
   return ((close_t)dlsym(RTLD_NEXT, "close"))(fd);
+}
+
+typedef pid_t (*tcgetpgrp_t)(int);
+pid_t tcgetpgrp (int fd) {
+  int ptyd_num = get_ptyd_num(fd);
+  pty_debug("XXXX Intercepted tcgetpgrp(%d)==%d\n", fd, ptyd_num);
+  if (ptyd_num >= 0) {
+    return (pid_t)5324; //XXXXX
+  }
+  return ((tcgetpgrp_t)dlsym(RTLD_NEXT, "tcgetpgrp"))(fd);
 }
