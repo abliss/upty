@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <pty.h>
 #include <stdlib.h>
@@ -63,6 +64,21 @@ int getpt() {
   return fd;
 }
 
+int get_front_fd(int back_ptyd_num) {
+  int front_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  struct sockaddr_un addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  strncpy(addr.sun_path, "front", sizeof(addr.sun_path)-1);
+  if (connect(front_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+    perror("error connecting to front");
+    return -1;
+  }
+  set_ptyd_num(front_fd, 2);
+  pty_debug("XXXX Returning fake front %d\n", front_fd);
+  return front_fd;
+}
+
 typedef int (*ioctl1_t)(int, unsigned long int, unsigned long int);
 
 int ioctl1(int fd, unsigned long int request, unsigned long int  data) {
@@ -83,18 +99,7 @@ int ioctl(int fd, unsigned long int  request, ...) {
   }
   switch(request) {
   case TIOCGPTPEER: {
-    int front_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, "front", sizeof(addr.sun_path)-1);
-    if (connect(front_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-      perror("error connecting to front");
-      exit(-1);
-    }
-    set_ptyd_num(front_fd, 2);
-    pty_debug("XXXX Returning fake front %d\n", front_fd);
-    return front_fd;
+    return get_front_fd(ptyd_num);
   }
   case TIOCGPTN: {
     // see ptsname.c
@@ -315,6 +320,38 @@ int dup3(int fd, int newfd, int flags) {
   
 }
 
+typedef int (*open_t)(const char*, int);
+typedef int (*open3_t)(const char*, int, mode_t);
+int open(const char *pathname, int flags, ...) {
+  pty_debug("XXXX Intercepted open(%s,%x)\n", pathname, flags);
+  if (strcmp("/dev/ptmx", pathname) == 0) {
+    return getpt();
+  } else if (strncmp("/dev/pts/", pathname, 9) == 0) {
+    int pty_num = atoi(pathname + 9);
+    if (pty_num <= 0) {
+      errno = ENOENT;
+      return -1;
+    }
+    return get_front_fd(pty_num);
+  }
+  va_list ap;
+  va_start(ap, flags);
+  int ret;
+  if (flags) {
+    mode_t mode = va_arg (ap, mode_t);
+    ret = ((open3_t)dlsym(RTLD_NEXT, "open"))(pathname, flags, mode);
+  } else {
+    ret = ((open_t)dlsym(RTLD_NEXT, "open"))(pathname, flags);
+  }
+  va_end(ap);
+  return ret;
+}
+
+
+/* TODO
+int openat(int dirfd, const char *pathname, int flags);
+int openat(int dirfd, const char *pathname, int flags, mode_t mode);
+*/
 typedef int (*close_t)(int);
 int close(int fd) {
   int ptyd_num = get_ptyd_num(fd);
