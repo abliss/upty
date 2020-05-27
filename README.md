@@ -25,6 +25,12 @@ discipline and terminal settings (using code from gvisor, which is not wired up
 yet), and shuttles bytes to/from a second socket which will stand in for the
 corresponding "slave" terminal.
 
+Binaries which do syscalls directly, or are statically linked, won't work. Nor
+will setuid binaries (like `screen`). Perhaps someday we can design a better API
+than the half-century-old protocol for talking to teletype machines over serial
+lines; then perhaps these binaries can be recompiled to speak that API directly
+to the `upty` daemon.
+
 # Roadmap
 Here are some test programs which use pseudoterminals; perhaps someday they will
 work with upty. Right now, an `x` means that I've tried them and gotten basic
