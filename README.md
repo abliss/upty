@@ -19,11 +19,11 @@ To try it out:
 The idea is to use an `LD_PRELOAD` shim to intercept calls to pty-related glibc
 functions (as well as `open` and `ioctl` for non-portable programs which use
 those directly). Instead of opening the real `/dev/ptmx` to ask the kernel for a
-new "master" pseudoterminal, we connect to a unix domain socket. On the other end
-of that socket is a daemon (written in golang) which handles all the line discipline
-and terminal settings (using code from gvisor, which is not wired up yet), and
-shuttle bytes between a second socket which will stand in for the corresponding
-"slave" terminal.
+new "master" pseudoterminal, we connect to a unix domain socket. On the other
+end of that socket is a daemon (written in golang) which handles all the line
+discipline and terminal settings (using code from gvisor, which is not wired up
+yet), and shuttles bytes to/from a second socket which will stand in for the
+corresponding "slave" terminal.
 
 # Roadmap
 Here are some test programs which use pseudoterminals; perhaps someday they will
@@ -39,6 +39,6 @@ practice.)
 - [     ] `screen` (only non-setuid mode is contemplated)
 - [     ] `emacs`
 - [     ] `xterm`
-- [     ] `rxvt`-
+- [     ] `rxvt`
 - [     ] `asciinema`
 - [     ] Android Terminal

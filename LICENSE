@@ -1,0 +1,5 @@
+The C code which builds the LD_PRELOAD shim is based on `glibc`, and licensed
+under the LGPL (see glibc/COPYING.LIB).
+
+The Golang code which builds the backend daemon is based on `gvisor`, and
+licensed under the APL2 (see gvisor/LICENSE).
