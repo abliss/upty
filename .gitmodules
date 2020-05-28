@@ -2,5 +2,5 @@
 	path = glibc
 	url = ../glibc
 [submodule "gvisor"]
-	path = gvisor
+	path = vendor/gvisor.dev/gvisor
 	url = ../gvisor
