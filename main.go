@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"gvisor.dev/gvisor/pkg/sentry/fsimpl/devpts"
 )
 
 var (
@@ -15,6 +16,8 @@ var (
 
 func main() {
 	flag.Parse()
+	log.Printf("Name: %s", devpts.Name)
+
 	for {
 		m2s := make(chan []byte)
 		s2m := make(chan []byte)
@@ -24,7 +27,7 @@ func main() {
 		go doRelay("back", m2s, s2m, errch)
 		go doRelay("front", s2m, m2s, errch)
 		err := <- errch
-		log.Printf("Error ", err)
+		log.Printf("Error %s ", err)
 		os.Remove("back");
 		os.Remove("front");
 	}
