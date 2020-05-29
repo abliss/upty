@@ -1,23 +1,40 @@
 package main
 
 import (
+	"bytes"
     "encoding/binary"
 	"flag"
 	"log"
 	"net"
 	"os"
+	"gvisor.dev/gvisor/pkg/context"
+	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
 	"gvisor.dev/gvisor/pkg/sentry/fsimpl/devpts"
 )
 
 var (
 	//path = flag.String("path", "", "Path to directory to serve")
 	//addr = flag.String("socket", "", "Path to unix socket to listen on")
+	UPTY_VERSION = []byte("upty");
 )
 
 func main() {
 	flag.Parse()
 	log.Printf("Name: %s", devpts.Name)
-
+	ctx := context.Background()  // TOD: will fail if task values are needed, e.g. setControllingTTY
+	var vfsObj vfs.VirtualFilesystem
+	vfsObj.Init()
+	creds := auth.NewAnonymousCredentials()
+	source := ""
+	var opts vfs.GetFilesystemOptions
+	var fstype devpts.FilesystemType
+	_, _, _ = fstype.GetFilesystem(
+		ctx,
+		&vfsObj,
+		creds,
+		source,
+		opts)
 	for {
 		m2s := make(chan []byte)
 		s2m := make(chan []byte)
@@ -96,6 +113,17 @@ func doRelay(name string, m2s, s2m chan []byte, errch chan error) {
 			continue
 		}
 		log.Printf("Accepted on %s", name)
+		buf := make([]byte, 4)
+		n, err := conn.Read(buf)
+		if err != nil || n < 4 {
+			log.Printf("Error on %s: version read(%d):%s", name, n, err)
+			continue;
+		}
+		if (!bytes.Equal(buf, UPTY_VERSION)) {
+			log.Printf("Error on %s: version mismatch:%s != %s", 
+				name, buf, UPTY_VERSION)
+			continue;
+		}
 		go relayConnToCh(errch, m2s, conn)
 		go relayChToConn(errch, s2m, conn)
 	}

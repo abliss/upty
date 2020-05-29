@@ -16,6 +16,8 @@
 #define pty_debug(...) fprintf(stderr, __VA_ARGS__)
 
 static const char* env_var_format = "__UPTY_NUM_%d";
+static const char* UPTY_VERSION = "upty";
+
 int set_upty_num(int fd, int upty_num) {
   char key[30];
   char val[12];
@@ -49,6 +51,7 @@ int getpt() {
     perror("error connecting to back");
     exit(-1);
   }
+  write(fd, UPTY_VERSION, 4);
   set_upty_num(fd, 1);
   pty_debug("XXXX Returning fake back %d\n", fd);
   return fd;
@@ -64,6 +67,7 @@ int get_front_fd(int back_upty_num) {
     perror("error connecting to front");
     return -1;
   }
+  write(front_fd, UPTY_VERSION, 4);
   set_upty_num(front_fd, 2);
   pty_debug("XXXX Returning fake front %d\n", front_fd);
   return front_fd;
