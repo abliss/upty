@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/sentry/arch"
 	"gvisor.dev/gvisor/pkg/context"
@@ -109,6 +110,7 @@ func relayFileToConn(fd *vfs.FileDescription, conn net.Conn) {
 func relayConnToFile(conn net.Conn, fd *vfs.FileDescription) {
 	buf := make([]byte, 4096)
 	for {
+		conn.SetDeadline(time.Time{})
 		n, err := conn.Read(buf)
 		if err != nil {
 			log.Printf("Error reading %d from conn: %s",n, err)
@@ -123,7 +125,7 @@ func relayConnToFile(conn net.Conn, fd *vfs.FileDescription) {
 			written, err := fd.Write(ctx, usermem.BytesIOSequence(buf), 
 				vfs.WriteOptions{})
 			if err != nil {
-				log.Printf("Error writing to file:%s", err) 
+				log.Printf("Error writing to fd:%s", err) 
 				return;
 			}
 			n -= int(written);
