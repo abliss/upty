@@ -2,104 +2,139 @@ package main
 
 import (
 	"bytes"
-    "encoding/binary"
+	"encoding/binary"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"os"
+	"gvisor.dev/gvisor/pkg/abi/linux"
+	"gvisor.dev/gvisor/pkg/sentry/arch"
 	"gvisor.dev/gvisor/pkg/context"
+	"gvisor.dev/gvisor/pkg/fspath"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
 	"gvisor.dev/gvisor/pkg/sentry/fsimpl/devpts"
+	"gvisor.dev/gvisor/pkg/usermem"
 )
 
 var (
 	//path = flag.String("path", "", "Path to directory to serve")
 	//addr = flag.String("socket", "", "Path to unix socket to listen on")
 	UPTY_VERSION = []byte("upty");
+	ctx = context.Background()  // TOD: will fail if task values are needed, e.g. setControllingTTY
 )
 
 func main() {
 	flag.Parse()
 	log.Printf("Name: %s", devpts.Name)
-	ctx := context.Background()  // TOD: will fail if task values are needed, e.g. setControllingTTY
 	var vfsObj vfs.VirtualFilesystem
 	vfsObj.Init()
 	creds := auth.NewAnonymousCredentials()
-	source := ""
+	source := "source"
 	var opts vfs.GetFilesystemOptions
 	var fstype devpts.FilesystemType
-	_, _, _ = fstype.GetFilesystem(
+
+	devptsObj, devptsRoot, err := fstype.GetFilesystem(
 		ctx,
 		&vfsObj,
 		creds,
 		source,
 		opts)
-	for {
-		m2s := make(chan []byte)
-		s2m := make(chan []byte)
-		errch := make(chan error)
-		os.Remove("back");
-		os.Remove("front");
-		go doRelay("back", m2s, s2m, errch)
-		go doRelay("front", s2m, m2s, errch)
-		err := <- errch
-		log.Printf("Error %s ", err)
-		os.Remove("back");
-		os.Remove("front");
+
+	mnt, err := vfsObj.NewDisconnectedMount(devptsObj, devptsRoot, 
+		&vfs.MountOptions{})
+	if err != nil {
+		log.Fatalf("error on mount create", err)
 	}
+	
+	vdir := vfs.MakeVirtualDentry(mnt, devptsRoot)
+	backPath := vfs.PathOperation{vdir, vdir, fspath.Parse("ptmx"), true}
+	
+	doRelay("back", func () (*vfs.FileDescription, error) {
+		fd, err := vfsObj.OpenAt(ctx, auth.CredentialsFromContext(ctx),
+			&backPath,
+			&vfs.OpenOptions{})
+		if (err != nil) {
+			return fd, err
+		}
+		buf := make([]byte, 4)
+		_, err = fd.Impl().Ioctl(ctx, &usermem.BytesIO{buf},
+			arch.SyscallArguments{
+				arch.SyscallArgument{},
+				arch.SyscallArgument{Value: uintptr(linux.TIOCGPTN)}});
+		if (err != nil) {
+			return fd, err
+		}
+		ptsNum := binary.LittleEndian.Uint32(buf)
+		log.Printf("Got ptsNum %d", ptsNum)
+		frontPath := vfs.PathOperation{vdir, vdir,
+			fspath.Parse(fmt.Sprintf("%d",ptsNum)), true}
+
+		go doRelay("front", func() (*vfs.FileDescription, error) {
+			frontFd, err := vfsObj.OpenAt(ctx, auth.CredentialsFromContext(ctx),
+				&frontPath,
+				&vfs.OpenOptions{})
+			return frontFd, err
+		})
+		return fd, nil
+	});
 }
 
-
-func relayConnToCh (errch chan error, ch chan []byte, conn net.Conn) {
+func relayFileToConn(fd *vfs.FileDescription, conn net.Conn) {
 	buf := make([]byte, 4096)
-	flag := make([]byte, 5)
+	for {
+		n, err := fd.Read(ctx, usermem.BytesIOSequence(buf), vfs.ReadOptions{})
+		if err != nil {
+			log.Printf("Error reading %d from fd: %s",n, err)
+			return;
+		}
+		m := n;
+		if m > 40 {
+			m = 40;
+		}
+		log.Printf("Read %d from fd: %s",n, buf[0:m])
+		for n > 0 {
+			written, err := conn.Write(buf[0:n])
+			if err != nil {
+				log.Printf("Error writing to conn:%s", err) 
+				return;
+			}
+			n -= int64(written);
+			log.Printf("Wrote %d, first %d, %d more", written, buf[0], n) 
+			buf = buf[written:]
+		}
+	}
+}
+func relayConnToFile(conn net.Conn, fd *vfs.FileDescription) {
+	buf := make([]byte, 4096)
 	for {
 		n, err := conn.Read(buf)
 		if err != nil {
-			errch <- err
-			continue;
+			log.Printf("Error reading %d from conn: %s",n, err)
+			return;
 		}
 		m := n;
-		if m > 10 {
+		if m > 40 {
 			m = 40;
 		}
 		log.Printf("Read %d from conn: %s",n, buf[0:m])
-		
-		flag[0] = 0;
-		binary.LittleEndian.PutUint32(flag[1:], uint32(n))
-		ch <- flag
-		ch <- buf[0:n]
-	}
-}
-
-func relayChToConn (errch chan error, ch chan []byte, conn net.Conn) {
-	for {
-		flag := <- ch
-		_ = flag
-		buf := <- ch
-		left := len(buf)
-		mybuf := buf
-		for (left > 0) {
-			n, err := conn.Write(mybuf)
+		for n > 0 {
+			written, err := fd.Write(ctx, usermem.BytesIOSequence(buf), 
+				vfs.WriteOptions{})
 			if err != nil {
-				errch <- err
-				break;
+				log.Printf("Error writing to file:%s", err) 
+				return;
 			}
-			left -= n
-			log.Printf("Wrote %d, first %d, %d more", n, mybuf[0], left) 
-			mybuf = mybuf[n:]
-		}
-		if (len(buf) == 1 && buf[0] == 13) {
-			//XXX
-			buf[0] = 10
-			conn.Write(buf)
-			log.Printf("Wrote extra newline") 
+			n -= int(written);
+			log.Printf("Wrote %d, first %d, %d more", written, buf[0], n) 
+			buf = buf[written:]
 		}
 	}
 }
 
-func doRelay(name string, m2s, s2m chan []byte, errch chan error) {
+func doRelay(name string, fdGet func() (*vfs.FileDescription, error)) {
+	os.Remove(name)
 	sock, err := net.Listen("unix", name)
 	if err != nil {
 		log.Fatalf("error on %s Listen(): ", name, err)
@@ -124,8 +159,17 @@ func doRelay(name string, m2s, s2m chan []byte, errch chan error) {
 				name, buf, UPTY_VERSION)
 			continue;
 		}
-		go relayConnToCh(errch, m2s, conn)
-		go relayChToConn(errch, s2m, conn)
+		backFd, err := fdGet()
+		if err != nil {
+			log.Fatalf("error on fdGet(): ", err)
+		}
+		
+		//errch := make(chan error)
+		go relayFileToConn(backFd, conn)
+		go relayConnToFile(conn, backFd)
 	}
 }
+
+
+
 
