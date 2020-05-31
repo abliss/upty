@@ -14,9 +14,11 @@ import (
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/fspath"
 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+	"gvisor.dev/gvisor/pkg/syserror"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/auth"
 	"gvisor.dev/gvisor/pkg/sentry/fsimpl/devpts"
 	"gvisor.dev/gvisor/pkg/usermem"
+	"gvisor.dev/gvisor/pkg/waiter"
 )
 
 var (
@@ -51,11 +53,11 @@ func main() {
 	
 	vdir := vfs.MakeVirtualDentry(mnt, devptsRoot)
 	backPath := vfs.PathOperation{vdir, vdir, fspath.Parse("ptmx"), true}
-	
+	var ordwr vfs.OpenOptions
+	ordwr.Flags = linux.O_RDWR
 	doRelay("back", func () (*vfs.FileDescription, error) {
 		fd, err := vfsObj.OpenAt(ctx, auth.CredentialsFromContext(ctx),
-			&backPath,
-			&vfs.OpenOptions{})
+			&backPath, &ordwr)
 		if (err != nil) {
 			return fd, err
 		}
@@ -75,62 +77,72 @@ func main() {
 		go doRelay("front", func() (*vfs.FileDescription, error) {
 			frontFd, err := vfsObj.OpenAt(ctx, auth.CredentialsFromContext(ctx),
 				&frontPath,
-				&vfs.OpenOptions{})
+				&ordwr)
 			return frontFd, err
 		})
 		return fd, nil
 	});
 }
 
-func relayFileToConn(fd *vfs.FileDescription, conn net.Conn) {
+type relayer struct {f func()}
+func (this relayer) Callback(e *waiter.Entry) {
+	this.f()
+}
+func relayFileToConn(name string, fd *vfs.FileDescription, conn net.Conn) {
 	buf := make([]byte, 4096)
-	for {
+	dump := func() {
 		n, err := fd.Read(ctx, usermem.BytesIOSequence(buf), vfs.ReadOptions{})
-		if err != nil {
-			log.Printf("Error reading %d from fd: %s",n, err)
+		if err != nil && err != syserror.ErrWouldBlock {
+			log.Printf("%s: Error reading %d from fd: %s", name, n, err)
 			return;
 		}
 		m := n;
 		if m > 40 {
 			m = 40;
 		}
-		log.Printf("Read %d from fd: %s",n, buf[0:m])
+		log.Printf("%s:Read %d from fd: %s",name,n, buf[0:m])
+		mybuf := buf
 		for n > 0 {
-			written, err := conn.Write(buf[0:n])
+			written, err := conn.Write(mybuf[0:n])
 			if err != nil {
-				log.Printf("Error writing to conn:%s", err) 
+				log.Printf("%s:Error writing %d to conn:%s",name, n, err) 
 				return;
 			}
 			n -= int64(written);
-			log.Printf("Wrote %d, first %d, %d more", written, buf[0], n) 
-			buf = buf[written:]
+			log.Printf("%s:Wrote %d to conn, first %d, %d more",name, written, mybuf[0], n) 
+			mybuf = mybuf[written:]
 		}
 	}
+	var e  waiter.Entry
+	e.Callback = &relayer{dump}
+	fd.EventRegister(&e, waiter.EventIn)
+	dump()
 }
-func relayConnToFile(conn net.Conn, fd *vfs.FileDescription) {
+func relayConnToFile(name string, conn net.Conn, fd *vfs.FileDescription) {
 	buf := make([]byte, 4096)
 	for {
 		conn.SetDeadline(time.Time{})
 		n, err := conn.Read(buf)
 		if err != nil {
-			log.Printf("Error reading %d from conn: %s",n, err)
+			log.Printf("%s:Error reading %d from conn: %s",name,n, err)
 			return;
 		}
 		m := n;
 		if m > 40 {
 			m = 40;
 		}
-		log.Printf("Read %d from conn: %s",n, buf[0:m])
+		log.Printf("%s:Read %d from conn: %s",name,n, buf[0:m])
+		mybuf := buf
 		for n > 0 {
-			written, err := fd.Write(ctx, usermem.BytesIOSequence(buf), 
+			written, err := fd.Write(ctx, usermem.BytesIOSequence(mybuf[0:n]), 
 				vfs.WriteOptions{})
 			if err != nil {
-				log.Printf("Error writing to fd:%s", err) 
+				log.Printf("%s:Error writing %d to fd:%s",name, n, err) 
 				return;
 			}
 			n -= int(written);
-			log.Printf("Wrote %d, first %d, %d more", written, buf[0], n) 
-			buf = buf[written:]
+			log.Printf("%s:Wrote %d to fd, first %d, %d more",name, written, mybuf[0], n) 
+			mybuf = mybuf[written:]
 		}
 	}
 }
@@ -161,17 +173,15 @@ func doRelay(name string, fdGet func() (*vfs.FileDescription, error)) {
 				name, buf, UPTY_VERSION)
 			continue;
 		}
-		backFd, err := fdGet()
+		fd, err := fdGet()
 		if err != nil {
-			log.Fatalf("error on fdGet(): ", err)
+			log.Fatalf("%s:error on fdGet(): %s",name, err)
 		}
 		
 		//errch := make(chan error)
-		go relayFileToConn(backFd, conn)
-		go relayConnToFile(conn, backFd)
+		go relayFileToConn(name, fd, conn)
+		go relayConnToFile(name, conn, fd)
 	}
 }
-
-
 
 
