@@ -25,7 +25,10 @@ var (
 	//path = flag.String("path", "", "Path to directory to serve")
 	//addr = flag.String("socket", "", "Path to unix socket to listen on")
 	UPTY_VERSION = []byte("upty");
-	ctx = context.Background()  // TOD: will fail if task values are needed, e.g. setControllingTTY
+	ctx = context.Background()  // TODO: will fail if task values are needed, e.g. setControllingTTY
+	backFds = make([]*vfs.FileDescription, 256);
+	frontFds = make([]*vfs.FileDescription, 256);
+	opener func(string) (*vfs.FileDescription, error)
 )
 
 func main() {
@@ -52,38 +55,48 @@ func main() {
 	}
 	
 	vdir := vfs.MakeVirtualDentry(mnt, devptsRoot)
-	backPath := vfs.PathOperation{vdir, vdir, fspath.Parse("ptmx"), true}
 	var ordwr vfs.OpenOptions
 	ordwr.Flags = linux.O_RDWR
-	doRelay("back", func () (*vfs.FileDescription, error) {
-		fd, err := vfsObj.OpenAt(ctx, auth.CredentialsFromContext(ctx),
-			&backPath, &ordwr)
-		if (err != nil) {
-			return fd, err
-		}
-		buf := make([]byte, 4)
-		_, err = fd.Impl().Ioctl(ctx, &usermem.BytesIO{buf},
-			arch.SyscallArguments{
-				arch.SyscallArgument{},
-				arch.SyscallArgument{Value: uintptr(linux.TIOCGPTN)}});
-		if (err != nil) {
-			return fd, err
-		}
-		ptsNum := binary.LittleEndian.Uint32(buf)
-		log.Printf("Got ptsNum %d", ptsNum)
-		frontPath := vfs.PathOperation{vdir, vdir,
-			fspath.Parse(fmt.Sprintf("%d",ptsNum)), true}
-
-		go doRelay("front", func() (*vfs.FileDescription, error) {
-			frontFd, err := vfsObj.OpenAt(ctx, auth.CredentialsFromContext(ctx),
-				&frontPath,
-				&ordwr)
-			return frontFd, err
-		})
-		return fd, nil
-	});
+	opener = func(path string) (*vfs.FileDescription, error) {
+		return vfsObj.OpenAt(ctx, auth.CredentialsFromContext(ctx),
+			&vfs.PathOperation{vdir, vdir, fspath.Parse(path), true}, 
+			&ordwr)
+	}
+	acceptAndRelay("upty");
 }
 
+func getBackFd() (*vfs.FileDescription, uint32, error) {
+	fd, err := opener("ptmx")
+	if (err != nil) {
+		return fd, 0, err
+	}
+	buf := make([]byte, 4)
+	_, err = fd.Impl().Ioctl(ctx, &usermem.BytesIO{buf},
+		arch.SyscallArguments{
+			arch.SyscallArgument{},
+			arch.SyscallArgument{Value: uintptr(linux.TIOCGPTN)}});
+	if (err != nil) {
+		return fd, 0, err
+	}
+	ptsNum := binary.LittleEndian.Uint32(buf)
+	log.Printf("Got ptsNum %d", ptsNum)
+	if (ptsNum >= uint32(len(backFds))) {
+		log.Fatalf("too many backfds");
+	}
+	backFds[ptsNum] = fd
+	return fd, ptsNum, nil
+}
+func getFrontFd(ptsNum uint32) (*vfs.FileDescription, error) {
+ 	fd, err := opener(fmt.Sprintf("%d",ptsNum))
+	if (err != nil) {
+		return fd, err
+	}
+	if (ptsNum >= uint32(len(frontFds))) {
+		log.Fatalf("too many frontfds");
+	}
+	frontFds[ptsNum] = fd
+	return fd, nil
+}
 type relayer struct {f func()}
 func (this relayer) Callback(e *waiter.Entry) {
 	this.f()
@@ -147,7 +160,7 @@ func relayConnToFile(name string, conn net.Conn, fd *vfs.FileDescription) {
 	}
 }
 
-func doRelay(name string, fdGet func() (*vfs.FileDescription, error)) {
+func acceptAndRelay(name string) {
 	os.Remove(name)
 	sock, err := net.Listen("unix", name)
 	if err != nil {
@@ -173,14 +186,37 @@ func doRelay(name string, fdGet func() (*vfs.FileDescription, error)) {
 				name, buf, UPTY_VERSION)
 			continue;
 		}
-		fd, err := fdGet()
-		if err != nil {
-			log.Fatalf("%s:error on fdGet(): %s",name, err)
+		n, err = conn.Read(buf[0:1])
+		if err != nil || n < 1 {
+			log.Printf("Error on %s: flag read(%d):%s", name, n, err)
+			continue;
 		}
-		
-		//errch := make(chan error)
-		go relayFileToConn(name, fd, conn)
-		go relayConnToFile(name, conn, fd)
+		if (buf[0] == 0) {
+			fd, ptsNum, err := getBackFd()
+			if err != nil {
+				log.Fatalf("%s:error on fdGet(): %s",name, err)
+			}
+			binary.LittleEndian.PutUint32(buf, ptsNum)
+			n, err = conn.Write(buf)
+			if err != nil || n < 4 {
+				log.Printf("Error on %s: flag write(%d):%s", name, n, err)
+			}
+			go relayFileToConn(name, fd, conn)
+			go relayConnToFile(name, conn, fd)
+		} else if (buf[0] == 1) {
+			_, err := conn.Read(buf)
+			ptsNum := binary.LittleEndian.Uint32(buf)
+			fd, err := getFrontFd(ptsNum)
+			if err != nil {
+				log.Fatalf("%s:error on getFrontFd(%d): %s",name, ptsNum, err)
+			}
+			go relayFileToConn(name, fd, conn)
+			go relayConnToFile(name, conn, fd)
+		} else if (buf[0] == 2) {
+			// TODO: pickup
+		} else {
+			log.Printf("Error on %s: unknown flag %d", name, buf[0])
+		}
 	}
 }
 

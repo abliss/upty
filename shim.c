@@ -17,6 +17,9 @@
 
 static const char* env_var_format = "__UPTY_NUM_%d";
 static const char* UPTY_VERSION = "upty";
+static const char UPTY_BACK = 0;
+static const char UPTY_FRONT = 1;
+static const char UPTY_IOCTL = 2;
 
 int set_upty_num(int fd, int upty_num) {
   char key[30];
@@ -46,14 +49,21 @@ int getpt() {
   struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, "back", sizeof(addr.sun_path)-1);
+  strncpy(addr.sun_path, "upty", sizeof(addr.sun_path)-1);
   if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
     perror("error connecting to back");
     exit(-1);
   }
   write(fd, UPTY_VERSION, 4);
-  set_upty_num(fd, 1);
-  pty_debug("XXXX Returning fake back %d\n", fd);
+  write(fd, &UPTY_BACK, 1);
+  int pty_num;
+  int r = read(fd, &pty_num, 4);
+  if (r != 4) {
+    perror("Bad read on connect");
+    return -1;
+  }
+  set_upty_num(fd, pty_num * 2);
+  pty_debug("XXXX Returning fake back %d=%d\n", fd, pty_num);
   return fd;
 }
 
@@ -62,13 +72,15 @@ int get_front_fd(int back_upty_num) {
   struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, "front", sizeof(addr.sun_path)-1);
+  strncpy(addr.sun_path, "upty", sizeof(addr.sun_path)-1);
   if (connect(front_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
     perror("error connecting to front");
     return -1;
   }
   write(front_fd, UPTY_VERSION, 4);
-  set_upty_num(front_fd, 2);
+  write(front_fd, &UPTY_FRONT, 1);
+  write(front_fd, &back_upty_num, 4);
+  set_upty_num(front_fd, back_upty_num * 2 + 1);
   pty_debug("XXXX Returning fake front %d\n", front_fd);
   return front_fd;
 }
@@ -93,23 +105,20 @@ int ioctl(int fd, unsigned long int  request, ...) {
   }
   switch(request) {
   case TIOCGPTPEER: {
-    return get_front_fd(upty_num);
+    return get_front_fd(upty_num / 2);
   }
   case TIOCGPTN: {
     // see ptsname.c
     // arg1 is a pointer to an unsigned int pty number.
     int* outptr = (int*) arg1;
-    int num = get_upty_num(fd);
+    int num = get_upty_num(fd) / 2;
     pty_debug("XXXX TIOCGPTN: Returning upty num %d\n", num);
     *outptr = num;
     return 0;
   }
-  case TIOCSCTTY: {
+  case TIOCSCTTY:
     // TOOD: see login_tty.c
     // become controlling tty
-    return 0;
-  }
-
   case TIOCGWINSZ:
   case TIOCSWINSZ:
     // TODO see openpty.c
@@ -192,9 +201,10 @@ int ioctl(int fd, unsigned long int  request, ...) {
   case TIOCPKT_START:
   case TIOCPKT_NOSTOP:
   case TIOCPKT_DOSTOP:
-  case TIOCPKT_IOCTL:
-    pty_debug("XXXX Ioctl not implemented : %lu\n", arg1);
+  case TIOCPKT_IOCTL: {
+    // PICKUP
     return 0;
+    }
   default:
     pty_debug("XXXX Unknown ioctl : %lu\n", arg1);
     return 0;}
