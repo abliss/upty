@@ -21,6 +21,16 @@ static const char UPTY_BACK = 0;
 static const char UPTY_FRONT = 1;
 static const char UPTY_IOCTL = 2;
 
+enum ioctl_arg_t {
+  int_,
+  int_p,
+  winsize_p,
+  termio_p,
+  termios_p,
+  char_p,
+  void_,
+  unknown_,
+};
 int set_upty_num(int fd, int upty_num) {
   char key[30];
   char val[12];
@@ -94,7 +104,7 @@ int ioctl1(int fd, unsigned long int request, unsigned long int  data) {
 //int ioctl(int fd, unsigned long request, void* arg1) {
 int ioctl(int fd, unsigned long int  request, ...) {
   int upty_num = get_upty_num(fd);
-  pty_debug("XXXX Intercepted ioctl: %d==%d %lu\n", 
+  pty_debug("XXXX Intercepted ioctl: %d==%d %lx\n", 
             fd, upty_num, request);
   va_list ap;
   va_start(ap, request);
@@ -103,6 +113,7 @@ int ioctl(int fd, unsigned long int  request, ...) {
   if (upty_num < 0) {
     return ioctl1(fd, request, arg1);
   }
+  enum ioctl_arg_t arg_t = unknown_;
   switch(request) {
   case TIOCGPTPEER: {
     return get_front_fd(upty_num / 2);
@@ -116,52 +127,80 @@ int ioctl(int fd, unsigned long int  request, ...) {
     *outptr = num;
     return 0;
   }
-  case TIOCSCTTY:
-    // TOOD: see login_tty.c
-    // become controlling tty
+  // The following ioctls are grouped by argument type from ioctl_tty(2):
   case TIOCGWINSZ:
-  case TIOCSWINSZ:
+  case TIOCSWINSZ: {
     // TODO see openpty.c
+    arg_t = winsize_p; // struct winsize*
+    break;
+  }
   case TCSETS:
   case TCSETSW:
   case TCSETSF:
-    // TODO: see tcsetattr.c
-
   case TCGETS:
-    // TODO: see tcgetattr.c
+  case TIOCGLCKTRMIOS:
+  case TIOCSLCKTRMIOS:
+    {
+      // TODO: see tcsetattr.c / tcgetattr.c
+      arg_t = termios_p; // struct termios*
+      break;
+    }
   case TCGETA:
   case TCSETA:
   case TCSETAW:
   case TCSETAF:
+    {
+      arg_t = termio_p;    // struct termio*
+      break;
+    }
   case TCSBRK:
+  case TCSBRKP:
   case TCXONC:
   case TCFLSH:
+  case TIOCSCTTY: // TODO: see login_tty.c -- become controlling tty
+    {
+      arg_t = int_; // int
+      break;
+    }
+  case TIOCSBRK:
+  case TIOCCBRK:
+  case TIOCCONS:
+  case TIOCNOTTY:
   case TIOCEXCL:
   case TIOCNXCL:
-  case TIOCGPGRP:
-  case TIOCSPGRP:
+    {
+      arg_t = void_;// void
+      break;
+    }
+  case FIONREAD: // aka TIOCINQ
   case TIOCOUTQ:
+  case TIOCSETD:
+  case TIOCGETD:
+  case TIOCGPGRP: // actually pid_t* but TODO assume that's int
+  case TIOCSPGRP:
+  case TIOCGSID:
+  case TIOCPKT:
+  case TIOCGPKT:
+  case TIOCSPTLCK:
+    {
+      arg_t = int_p; // int*
+      break;
+    }
   case TIOCSTI:
+    {
+      arg_t = char_p; // char *argp
+      break;
+    }
   case TIOCMGET:
   case TIOCMBIS:
   case TIOCMBIC:
   case TIOCMSET:
   case TIOCGSOFTCAR:
   case TIOCSSOFTCAR:
-  case FIONREAD: // aka TIOCINQ
   case TIOCLINUX:
-  case TIOCCONS:
   case TIOCGSERIAL:
   case TIOCSSERIAL:
-  case TIOCPKT:
   case FIONBIO:
-  case TIOCNOTTY:
-  case TIOCSETD:
-  case TIOCGETD:
-  case TCSBRKP:
-  case TIOCSBRK:
-  case TIOCCBRK:
-  case TIOCGSID:
     /*
       case TCGETS2:
       case TCSETS2:
@@ -169,7 +208,6 @@ int ioctl(int fd, unsigned long int  request, ...) {
       case TCSETSF2:
     */
   case TIOCGRS485:
-  case TIOCSPTLCK:
   case TIOCGDEV:
   case TCGETX:
   case TCSETX:
@@ -177,7 +215,6 @@ int ioctl(int fd, unsigned long int  request, ...) {
   case TCSETXW:
   case TIOCSIG:
   case TIOCVHANGUP:
-  case TIOCGPKT:
   case TIOCGPTLCK:
   case TIOCGEXCL:
   case FIONCLEX:
@@ -186,8 +223,6 @@ int ioctl(int fd, unsigned long int  request, ...) {
   case TIOCSERCONFIG:
   case TIOCSERGWILD:
   case TIOCSERSWILD:
-  case TIOCGLCKTRMIOS:
-  case TIOCSLCKTRMIOS:
   case TIOCSERGSTRUCT:
   case TIOCSERGETLSR:
   case TIOCSERGETMULTI:
@@ -202,13 +237,115 @@ int ioctl(int fd, unsigned long int  request, ...) {
   case TIOCPKT_NOSTOP:
   case TIOCPKT_DOSTOP:
   case TIOCPKT_IOCTL: {
-    // PICKUP
+    pty_debug("XXXX Ioctl not implemented : %lu\n", arg1);
     return 0;
-    }
-  default:
+  }
+  default: {
     pty_debug("XXXX Unknown ioctl : %lu\n", arg1);
-    return 0;}
-  
+    return 0;
+  }
+  }
+  int ioctl_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  struct sockaddr_un addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  strncpy(addr.sun_path, "upty", sizeof(addr.sun_path)-1);
+  if (connect(ioctl_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+    perror("error connecting to ioctl");
+    return -1;
+  }
+  write(ioctl_fd, UPTY_VERSION, 4);
+  write(ioctl_fd, &UPTY_IOCTL, 1);
+
+  int basenum = upty_num / 2;
+  write(ioctl_fd, &basenum, 4);
+  char is_master = upty_num % 2 ? 1 : 0; 
+  write(ioctl_fd, &is_master, 1);
+  write(ioctl_fd, &request, sizeof(request));
+  char arg_t_c = (char)arg_t;
+  write(ioctl_fd, &arg_t_c, 1);
+  char nbytes;
+  int n = 0;
+  switch(arg_t) {
+  case void_: {
+    nbytes = 0;
+    write(ioctl_fd, &nbytes, 1);
+    break;
+  }
+  case int_: {
+    nbytes = sizeof(arg1);
+    write(ioctl_fd, &nbytes, 1);
+    write(ioctl_fd, &arg1, sizeof(arg1));
+    break;
+  }
+  case int_p: {
+    int arg = *((int*)arg1);
+    nbytes = sizeof(arg);
+    write(ioctl_fd, &nbytes, 1);
+    write(ioctl_fd, &arg, sizeof(arg));
+    n = read(ioctl_fd, &arg, sizeof(arg));
+    pty_debug("XXXX Read for ioctl : %d\n", n);
+    *((int*)arg1) = arg;
+    break;
+  }
+  case char_p: {
+    char arg = *((char*)arg1);
+    nbytes = sizeof(arg);
+    write(ioctl_fd, &nbytes, 1);
+    write(ioctl_fd, &arg, sizeof(arg));
+    n = read(ioctl_fd, &arg, sizeof(arg));
+    pty_debug("XXXX Read for ioctl : %d\n", n);
+
+    *((char*)arg1) = arg;
+    break;
+  }
+  case winsize_p: {
+    struct winsize arg = *((struct winsize*)arg1);
+    nbytes = sizeof(arg);
+    write(ioctl_fd, &nbytes, 1);
+    write(ioctl_fd, &arg, sizeof(arg));
+    n = read(ioctl_fd, &arg, sizeof(arg));
+    pty_debug("XXXX Read for ioctl : %d\n", n);
+
+    *((struct winsize*)arg1) = arg;
+    break;
+  }
+  case termio_p: {
+    struct termio arg = *((struct termio*)arg1);
+    nbytes = sizeof(arg);
+    write(ioctl_fd, &nbytes, 1);
+    write(ioctl_fd, &arg, sizeof(arg));
+    n = read(ioctl_fd, &arg, sizeof(arg));
+    pty_debug("XXXX Read for ioctl : %d\n", n);
+    *((struct termio*)arg1) = arg;
+    break;
+  }
+  case termios_p: {
+    struct termios arg = *((struct termios*)arg1);
+    nbytes = sizeof(arg);
+    write(ioctl_fd, &nbytes, 1);
+    write(ioctl_fd, &arg, sizeof(arg));
+    n = read(ioctl_fd, &arg, sizeof(arg));
+    pty_debug("XXXX Read for ioctl : %d\n", n);
+    *((struct termios*)arg1) = arg;
+    break;
+  }
+  case unknown_: {
+    pty_debug("XXXX Ioctl not implemented : %lu\n", arg1);
+    return -1;
+  }
+  }
+  int ret_code, err_no;
+  n = read(ioctl_fd, &ret_code, sizeof(ret_code));
+  pty_debug("XXXX Read for ioctl : %d\n", n);
+  n = read(ioctl_fd, &err_no, sizeof(err_no));
+  pty_debug("XXXX Read for ioctl : %d\n", n);
+  close(ioctl_fd);
+  if (ret_code < 0) {
+    errno = err_no;
+  }
+  pty_debug("XXXX Returning from ioctl : %d\n", ret_code);
+  return ret_code;
 }
 
 

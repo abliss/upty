@@ -102,6 +102,7 @@ func (this relayer) Callback(e *waiter.Entry) {
 	this.f()
 }
 func relayFileToConn(name string, fd *vfs.FileDescription, conn net.Conn) {
+	defer recover()
 	buf := make([]byte, 4096)
 	dump := func() {
 		n, err := fd.Read(ctx, usermem.BytesIOSequence(buf), vfs.ReadOptions{})
@@ -114,17 +115,7 @@ func relayFileToConn(name string, fd *vfs.FileDescription, conn net.Conn) {
 			m = 40;
 		}
 		log.Printf("%s:Read %d from fd: %s",name,n, buf[0:m])
-		mybuf := buf
-		for n > 0 {
-			written, err := conn.Write(mybuf[0:n])
-			if err != nil {
-				log.Printf("%s:Error writing %d to conn:%s",name, n, err) 
-				return;
-			}
-			n -= int64(written);
-			log.Printf("%s:Wrote %d to conn, first %d, %d more",name, written, mybuf[0], n) 
-			mybuf = mybuf[written:]
-		}
+		fully(conn.Write, buf[0:n])
 	}
 	var e  waiter.Entry
 	e.Callback = &relayer{dump}
@@ -133,6 +124,10 @@ func relayFileToConn(name string, fd *vfs.FileDescription, conn net.Conn) {
 }
 func relayConnToFile(name string, conn net.Conn, fd *vfs.FileDescription) {
 	buf := make([]byte, 4096)
+	defer recover();
+	defer conn.Close()
+	defer fd.DecRef()
+
 	for {
 		conn.SetDeadline(time.Time{})
 		n, err := conn.Read(buf)
@@ -145,28 +140,30 @@ func relayConnToFile(name string, conn net.Conn, fd *vfs.FileDescription) {
 			m = 40;
 		}
 		log.Printf("%s:Read %d from conn: %s",name,n, buf[0:m])
-		mybuf := buf
-		for n > 0 {
-			written, err := fd.Write(ctx, usermem.BytesIOSequence(mybuf[0:n]), 
+		fully(func (buf []byte) (int, error) {
+			n64, err2 := fd.Write(ctx, usermem.BytesIOSequence(buf), 
 				vfs.WriteOptions{})
-			if err != nil {
-				log.Printf("%s:Error writing %d to fd:%s",name, n, err) 
-				return;
-			}
-			n -= int(written);
-			log.Printf("%s:Wrote %d to fd, first %d, %d more",name, written, mybuf[0], n) 
-			mybuf = mybuf[written:]
-		}
+			return int(n64), err2
+		}, buf[0:n])
 	}
 }
 
+func fully(rw func ([]byte) (int, error), buf []byte) {
+	for len(buf) > 0 {
+		n, err := rw(buf);
+		if n <= 0 || err != nil {
+			log.Printf("Error in fully: n=%d, err=%s, rw=%s", n, err, rw)
+			panic(err)
+		}
+		buf = buf[n:]
+	}
+}
 func acceptAndRelay(name string) {
 	os.Remove(name)
 	sock, err := net.Listen("unix", name)
 	if err != nil {
 		log.Fatalf("error on %s Listen(): ", name, err)
 	}
-	defer sock.Close()
 	for {
 		log.Printf("Accepting on %s", name) 
 		conn, err := sock.Accept()
@@ -174,37 +171,30 @@ func acceptAndRelay(name string) {
 			log.Print("Error on %s Accept():", name, err)
 			continue
 		}
+		defer recover();
+
 		log.Printf("Accepted on %s", name)
 		buf := make([]byte, 4)
-		n, err := conn.Read(buf)
-		if err != nil || n < 4 {
-			log.Printf("Error on %s: version read(%d):%s", name, n, err)
-			continue;
-		}
+		fully(conn.Read, buf);
 		if (!bytes.Equal(buf, UPTY_VERSION)) {
 			log.Printf("Error on %s: version mismatch:%s != %s", 
 				name, buf, UPTY_VERSION)
+			conn.Close()
 			continue;
 		}
-		n, err = conn.Read(buf[0:1])
-		if err != nil || n < 1 {
-			log.Printf("Error on %s: flag read(%d):%s", name, n, err)
-			continue;
-		}
-		if (buf[0] == 0) {
+		fully(conn.Read,buf[0:1])
+		switch(buf[0]) {
+		case 0:
 			fd, ptsNum, err := getBackFd()
 			if err != nil {
 				log.Fatalf("%s:error on fdGet(): %s",name, err)
 			}
 			binary.LittleEndian.PutUint32(buf, ptsNum)
-			n, err = conn.Write(buf)
-			if err != nil || n < 4 {
-				log.Printf("Error on %s: flag write(%d):%s", name, n, err)
-			}
+			fully(conn.Write,buf)
 			go relayFileToConn(name, fd, conn)
 			go relayConnToFile(name, conn, fd)
-		} else if (buf[0] == 1) {
-			_, err := conn.Read(buf)
+		case 1:
+			fully(conn.Read, buf)
 			ptsNum := binary.LittleEndian.Uint32(buf)
 			fd, err := getFrontFd(ptsNum)
 			if err != nil {
@@ -212,10 +202,36 @@ func acceptAndRelay(name string) {
 			}
 			go relayFileToConn(name, fd, conn)
 			go relayConnToFile(name, conn, fd)
-		} else if (buf[0] == 2) {
-			// TODO: pickup
-		} else {
+		case 2:
+			defer conn.Close();
+			hBuf := make([]byte, 8)
+			fully(conn.Read, hBuf[0:4])
+			ptsNum := binary.LittleEndian.Uint32(hBuf[0:4])
+			fully(conn.Read, hBuf[0:1])
+			isMaster := hBuf[0] != 0
+			fully(conn.Read, hBuf[0:8])
+			request := binary.LittleEndian.Uint64(hBuf[0:8])
+			fully(conn.Read, hBuf[0:1])
+			argT := int(hBuf[0])
+			fully(conn.Read, hBuf[0:1])
+			nBytes := int(hBuf[0])
+			aBuf := make([]byte, nBytes)
+			fully(conn.Read,aBuf) //TODO
+			log.Printf("%s:ioctl on num=%d, master=%s, req=%x, argT=%d, bytes=%d",
+				name, ptsNum, isMaster, request, argT, nBytes)
+			// TODO: do ioctl
+			_ = ptsNum
+			_ = isMaster
+			fully(conn.Write, aBuf);
+			// return code
+			binary.LittleEndian.PutUint32(buf, 0)
+			fully(conn.Write, buf); // TODO
+			// errno
+			binary.LittleEndian.PutUint32(buf, 0)
+			fully(conn.Write, buf);
+		default:
 			log.Printf("Error on %s: unknown flag %d", name, buf[0])
+			conn.Close()
 		}
 	}
 }
