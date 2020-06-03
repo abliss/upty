@@ -102,7 +102,7 @@ func (this relayer) Callback(e *waiter.Entry) {
 	this.f()
 }
 func relayFileToConn(name string, fd *vfs.FileDescription, conn net.Conn) {
-	defer recover()
+	defer Recover()
 	buf := make([]byte, 4096)
 	dump := func() {
 		n, err := fd.Read(ctx, usermem.BytesIOSequence(buf), vfs.ReadOptions{})
@@ -115,6 +115,7 @@ func relayFileToConn(name string, fd *vfs.FileDescription, conn net.Conn) {
 			m = 40;
 		}
 		log.Printf("%s:Read %d from fd: %s",name,n, buf[0:m])
+		defer Recover()
 		fully(conn.Write, buf[0:n])
 	}
 	var e  waiter.Entry
@@ -124,7 +125,7 @@ func relayFileToConn(name string, fd *vfs.FileDescription, conn net.Conn) {
 }
 func relayConnToFile(name string, conn net.Conn, fd *vfs.FileDescription) {
 	buf := make([]byte, 4096)
-	defer recover();
+	defer Recover();
 	defer conn.Close()
 	defer fd.DecRef()
 
@@ -147,7 +148,9 @@ func relayConnToFile(name string, conn net.Conn, fd *vfs.FileDescription) {
 		}, buf[0:n])
 	}
 }
-
+func Recover() {
+	recover()
+}
 func fully(rw func ([]byte) (int, error), buf []byte) {
 	for len(buf) > 0 {
 		n, err := rw(buf);
@@ -171,7 +174,7 @@ func acceptAndRelay(name string) {
 			log.Print("Error on %s Accept():", name, err)
 			continue
 		}
-		defer recover();
+		defer Recover();
 
 		log.Printf("Accepted on %s", name)
 		buf := make([]byte, 4)
@@ -200,6 +203,7 @@ func acceptAndRelay(name string) {
 			if err != nil {
 				log.Fatalf("%s:error on getFrontFd(%d): %s",name, ptsNum, err)
 			}
+			log.Printf("Got front for ptsNum %d: %d", ptsNum, fd)
 			go relayFileToConn(name, fd, conn)
 			go relayConnToFile(name, conn, fd)
 		case 2:

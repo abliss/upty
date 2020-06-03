@@ -33,14 +33,20 @@ enum ioctl_arg_t {
 };
 int set_upty_num(int fd, int upty_num) {
   char key[30];
-  char val[12];
   snprintf(key, sizeof(key), env_var_format, fd);
-  snprintf(val, sizeof(val), "%d", upty_num);
-  int ret = setenv(key, val, 1);
-  if (ret < 0) {
-    perror("error in setenv");
+  if (upty_num < 0) {
+    pty_debug("XXXX unsetting %s\n", key);
+    return unsetenv(key);
+  } else {
+    char val[12];
+    snprintf(val, sizeof(val), "%d", upty_num);
+    pty_debug("XXXX setting %s=%s\n", key, val);
+    int ret = setenv(key, val, 1);
+    if (ret < 0) {
+      perror("error in setenv");
+    }
+    return ret;
   }
-  return ret;
 }
 
 int get_upty_num(int fd) {
