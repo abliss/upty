@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"time"
+	"syscall"
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/sentry/arch"
 	"gvisor.dev/gvisor/pkg/context"
@@ -161,6 +162,51 @@ func fully(rw func ([]byte) (int, error), buf []byte) {
 		buf = buf[n:]
 	}
 }
+func handleIoctl(conn net.Conn) {
+	defer conn.Close()
+	defer Recover()
+	hBuf := make([]byte, 8)
+	fully(conn.Read, hBuf[0:4])
+	ptsNum := binary.LittleEndian.Uint32(hBuf[0:4])
+	fully(conn.Read, hBuf[0:1])
+	isBack := hBuf[0] != 0
+	fully(conn.Read, hBuf[0:8])
+	request := binary.LittleEndian.Uint64(hBuf[0:8])
+	fully(conn.Read, hBuf[0:1])
+	argT := int(hBuf[0])
+	fully(conn.Read, hBuf[0:1])
+	nBytes := int(hBuf[0])
+	aBuf := make([]byte, nBytes)
+	fully(conn.Read,aBuf)
+	log.Printf("upty:ioctl on num=%d, back=%s, req=%x, argT=%d, bytes=%d",
+		ptsNum, isBack, request, argT, nBytes)
+	// TODO: do ioctl
+	var fd *vfs.FileDescription
+	if (isBack) {
+		fd = backFds[ptsNum]
+	} else {
+		fd = frontFds[ptsNum]
+	}
+	var syscallArgs arch.SyscallArguments
+	syscallArgs[0] = arch.SyscallArgument{uintptr(16)} // ioctl
+	syscallArgs[1] = arch.SyscallArgument{uintptr(request)}
+	if (argT == 0) {
+		// special case, arg is literal int, not pointer
+		syscallArgs[2] = arch.SyscallArgument{uintptr(binary.LittleEndian.Uint64(aBuf))}
+	} else {
+		// for all others, the arg is a pointer to the beginning of buf
+		syscallArgs[2] = arch.SyscallArgument{uintptr(0)}
+	}
+	ret, err := fd.Impl().Ioctl(ctx, &usermem.BytesIO{aBuf}, syscallArgs)
+	fully(conn.Write, aBuf);
+	// return code
+	buf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buf, uint32(ret))
+	fully(conn.Write, buf);
+	// errno
+	binary.LittleEndian.PutUint32(buf, uint32(err.(syscall.Errno)))
+	fully(conn.Write, buf);
+}
 func acceptAndRelay(name string) {
 	os.Remove(name)
 	sock, err := net.Listen("unix", name)
@@ -207,36 +253,11 @@ func acceptAndRelay(name string) {
 			go relayFileToConn(name, fd, conn)
 			go relayConnToFile(name, conn, fd)
 		case 2:
-			defer conn.Close();
-			hBuf := make([]byte, 8)
-			fully(conn.Read, hBuf[0:4])
-			ptsNum := binary.LittleEndian.Uint32(hBuf[0:4])
-			fully(conn.Read, hBuf[0:1])
-			isMaster := hBuf[0] != 0
-			fully(conn.Read, hBuf[0:8])
-			request := binary.LittleEndian.Uint64(hBuf[0:8])
-			fully(conn.Read, hBuf[0:1])
-			argT := int(hBuf[0])
-			fully(conn.Read, hBuf[0:1])
-			nBytes := int(hBuf[0])
-			aBuf := make([]byte, nBytes)
-			fully(conn.Read,aBuf) //TODO
-			log.Printf("%s:ioctl on num=%d, master=%s, req=%x, argT=%d, bytes=%d",
-				name, ptsNum, isMaster, request, argT, nBytes)
-			// TODO: do ioctl
-			_ = ptsNum
-			_ = isMaster
-			fully(conn.Write, aBuf);
-			// return code
-			binary.LittleEndian.PutUint32(buf, 0)
-			fully(conn.Write, buf); // TODO
-			// errno
-			binary.LittleEndian.PutUint32(buf, 0)
-			fully(conn.Write, buf);
+			go handleIoctl(conn)
 		default:
 			log.Printf("Error on %s: unknown flag %d", name, buf[0])
 			conn.Close()
-		}
+			}
 	}
 }
 

@@ -10,3 +10,7 @@ LD_PRELOAD=$PWD/shim.so \
           strace -f -o strace.txt \
 	      script --return --command \
           "tty"
+LD_PRELOAD=$PWD/shim.so \
+          strace -f -o strace.txt \
+	      script --return --command \
+          "/bin/stty"
