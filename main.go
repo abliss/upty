@@ -63,7 +63,7 @@ func main() {
 			&vfs.PathOperation{vdir, vdir, fspath.Parse(path), true}, 
 			&ordwr)
 	}
-	acceptAndRelay("upty");
+	acceptAndRelay(".upty-sock");
 }
 
 func getBackFd() (*vfs.FileDescription, uint32, error) {
@@ -102,20 +102,20 @@ type relayer struct {f func()}
 func (this relayer) Callback(e *waiter.Entry) {
 	this.f()
 }
-func relayFileToConn(name string, fd *vfs.FileDescription, conn net.Conn) {
+func relayFileToConn(fd *vfs.FileDescription, conn net.Conn) {
 	defer Recover()
 	buf := make([]byte, 4096)
 	dump := func() {
 		n, err := fd.Read(ctx, usermem.BytesIOSequence(buf), vfs.ReadOptions{})
 		if err != nil && err != syserror.ErrWouldBlock {
-			log.Printf("%s: Error reading %d from fd: %s", name, n, err)
+			log.Printf("upty: Error reading %d from fd: %s", n, err)
 			return;
 		}
 		m := n;
 		if m > 40 {
 			m = 40;
 		}
-		log.Printf("%s:Read %d from fd: %s",name,n, buf[0:m])
+		log.Printf("upty:Read %d from fd: %s",n, buf[0:m])
 		defer Recover()
 		fully(conn.Write, buf[0:n])
 	}
@@ -124,7 +124,7 @@ func relayFileToConn(name string, fd *vfs.FileDescription, conn net.Conn) {
 	fd.EventRegister(&e, waiter.EventIn)
 	dump()
 }
-func relayConnToFile(name string, conn net.Conn, fd *vfs.FileDescription) {
+func relayConnToFile(conn net.Conn, fd *vfs.FileDescription) {
 	buf := make([]byte, 4096)
 	defer Recover();
 	defer conn.Close()
@@ -134,14 +134,14 @@ func relayConnToFile(name string, conn net.Conn, fd *vfs.FileDescription) {
 		conn.SetDeadline(time.Time{})
 		n, err := conn.Read(buf)
 		if err != nil {
-			log.Printf("%s:Error reading %d from conn: %s",name,n, err)
+			log.Printf("upty:Error reading %d from conn: %s",n, err)
 			return;
 		}
 		m := n;
 		if m > 40 {
 			m = 40;
 		}
-		log.Printf("%s:Read %d from conn: %s",name,n, buf[0:m])
+		log.Printf("upty:Read %d from conn: %s",n, buf[0:m])
 		fully(func (buf []byte) (int, error) {
 			n64, err2 := fd.Write(ctx, usermem.BytesIOSequence(buf), 
 				vfs.WriteOptions{})
@@ -207,27 +207,27 @@ func handleIoctl(conn net.Conn) {
 	binary.LittleEndian.PutUint32(buf, uint32(err.(syscall.Errno)))
 	fully(conn.Write, buf);
 }
-func acceptAndRelay(name string) {
-	os.Remove(name)
-	sock, err := net.Listen("unix", name)
+func acceptAndRelay(socketPath string) {
+	os.Remove(socketPath)
+	sock, err := net.Listen("unix", socketPath)
 	if err != nil {
-		log.Fatalf("error on %s Listen(): ", name, err)
+		log.Fatalf("error on %s Listen(): ", socketPath, err)
 	}
 	for {
-		log.Printf("Accepting on %s", name) 
+		log.Printf("Accepting on %s", socketPath) 
 		conn, err := sock.Accept()
 		if err != nil {
-			log.Print("Error on %s Accept():", name, err)
+			log.Print("Error on %s Accept():", socketPath, err)
 			continue
 		}
 		defer Recover();
 
-		log.Printf("Accepted on %s", name)
+		log.Printf("Accepted on %s", socketPath)
 		buf := make([]byte, 4)
 		fully(conn.Read, buf);
 		if (!bytes.Equal(buf, UPTY_VERSION)) {
-			log.Printf("Error on %s: version mismatch:%s != %s", 
-				name, buf, UPTY_VERSION)
+			log.Printf("upty:Error: version mismatch:%s != %s", 
+				buf, UPTY_VERSION)
 			conn.Close()
 			continue;
 		}
@@ -236,26 +236,26 @@ func acceptAndRelay(name string) {
 		case 0:
 			fd, ptsNum, err := getBackFd()
 			if err != nil {
-				log.Fatalf("%s:error on fdGet(): %s",name, err)
+				log.Fatalf("upty:error on fdGet(): %s", err)
 			}
 			binary.LittleEndian.PutUint32(buf, ptsNum)
 			fully(conn.Write,buf)
-			go relayFileToConn(name, fd, conn)
-			go relayConnToFile(name, conn, fd)
+			go relayFileToConn(fd, conn)
+			go relayConnToFile(conn, fd)
 		case 1:
 			fully(conn.Read, buf)
 			ptsNum := binary.LittleEndian.Uint32(buf)
 			fd, err := getFrontFd(ptsNum)
 			if err != nil {
-				log.Fatalf("%s:error on getFrontFd(%d): %s",name, ptsNum, err)
+				log.Fatalf("upty:error on getFrontFd(%d): %s", ptsNum, err)
 			}
 			log.Printf("Got front for ptsNum %d: %d", ptsNum, fd)
-			go relayFileToConn(name, fd, conn)
-			go relayConnToFile(name, conn, fd)
+			go relayFileToConn(fd, conn)
+			go relayConnToFile(conn, fd)
 		case 2:
 			go handleIoctl(conn)
 		default:
-			log.Printf("Error on %s: unknown flag %d", name, buf[0])
+			log.Printf("upty:Error on %s: unknown flag %d", buf[0])
 			conn.Close()
 			}
 	}

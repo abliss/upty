@@ -13,13 +13,14 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#define pty_debug(...) fprintf(stderr, __VA_ARGS__)
+#define upty_debug(...) if (getenv("UPTY_DEBUG")) {fprintf(stderr, __VA_ARGS__);}
 
 static const char* env_var_format = "__UPTY_NUM_%d";
 static const char* UPTY_VERSION = "upty";
 static const char UPTY_BACK = 0;
 static const char UPTY_FRONT = 1;
 static const char UPTY_IOCTL = 2;
+static char UPTY_SOCKET[256];
 
 enum ioctl_arg_t {
   int_,
@@ -31,19 +32,35 @@ enum ioctl_arg_t {
   void_,
   unknown_,
 };
+char* get_socket_path() {
+  if (UPTY_SOCKET[0] == 0) {
+    char* env = getenv("UPTY_SOCKET");
+    if (env) {
+      strncpy(UPTY_SOCKET, env, sizeof(UPTY_SOCKET));
+    } else if (getenv("HOME")) {
+      snprintf(UPTY_SOCKET, sizeof(UPTY_SOCKET), 
+               "%s/.upty-sock", getenv("HOME"));
+    } else {
+      snprintf(UPTY_SOCKET, sizeof(UPTY_SOCKET),
+               "/run/upty-%d/sock", getuid());
+    }
+  }
+  upty_debug("upty: Socket path: %s\n", UPTY_SOCKET);
+  return UPTY_SOCKET;
+}
 int set_upty_num(int fd, int upty_num) {
   char key[30];
   snprintf(key, sizeof(key), env_var_format, fd);
   if (upty_num < 0) {
-    pty_debug("XXXX unsetting %s\n", key);
+    upty_debug("upty: unsetting %s\n", key);
     return unsetenv(key);
   } else {
     char val[12];
     snprintf(val, sizeof(val), "%d", upty_num);
-    pty_debug("XXXX setting %s=%s\n", key, val);
+    upty_debug("upty: setting %s=%s\n", key, val);
     int ret = setenv(key, val, 1);
     if (ret < 0) {
-      perror("error in setenv");
+      perror("upty:error in setenv");
     }
     return ret;
   }
@@ -60,14 +77,14 @@ int get_upty_num(int fd) {
   }
 }
 int getpt() {
-  pty_debug("XXXX Intercepted getpt\n");
+  upty_debug("upty: Intercepted getpt\n");
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);
   struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, "upty", sizeof(addr.sun_path)-1);
+  strncpy(addr.sun_path, get_socket_path(), sizeof(addr.sun_path)-1);
   if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-    perror("error connecting to back");
+    perror("upty: error connecting to back");
     exit(-1);
   }
   write(fd, UPTY_VERSION, 4);
@@ -75,11 +92,11 @@ int getpt() {
   int pty_num;
   int r = read(fd, &pty_num, 4);
   if (r != 4) {
-    perror("Bad read on connect");
+    perror("upty: Bad read on connect");
     return -1;
   }
   set_upty_num(fd, pty_num * 2);
-  pty_debug("XXXX Returning fake back %d=%d\n", fd, pty_num);
+  upty_debug("upty: Returning fake back %d=%d\n", fd, pty_num);
   return fd;
 }
 
@@ -88,16 +105,16 @@ int get_front_fd(int back_upty_num) {
   struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, "upty", sizeof(addr.sun_path)-1);
+  strncpy(addr.sun_path, get_socket_path(), sizeof(addr.sun_path)-1);
   if (connect(front_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-    perror("error connecting to front");
+    perror("upty: error connecting to front");
     return -1;
   }
   write(front_fd, UPTY_VERSION, 4);
   write(front_fd, &UPTY_FRONT, 1);
   write(front_fd, &back_upty_num, 4);
   set_upty_num(front_fd, back_upty_num * 2 + 1);
-  pty_debug("XXXX Returning fake front %d\n", front_fd);
+  upty_debug("upty: Returning fake front %d\n", front_fd);
   return front_fd;
 }
 
@@ -110,7 +127,7 @@ int ioctl1(int fd, unsigned long int request, unsigned long int  data) {
 //int ioctl(int fd, unsigned long request, void* arg1) {
 int ioctl(int fd, unsigned long int  request, ...) {
   int upty_num = get_upty_num(fd);
-  pty_debug("XXXX Intercepted ioctl: %d==%d %lx\n", 
+  upty_debug("upty: Intercepted ioctl: %d==%d %lx\n", 
             fd, upty_num, request);
   va_list ap;
   va_start(ap, request);
@@ -129,7 +146,7 @@ int ioctl(int fd, unsigned long int  request, ...) {
     // arg1 is a pointer to an unsigned int pty number.
     int* outptr = (int*) arg1;
     int num = get_upty_num(fd) / 2;
-    pty_debug("XXXX TIOCGPTN: Returning upty num %d\n", num);
+    upty_debug("upty: TIOCGPTN: Returning upty num %d\n", num);
     *outptr = num;
     return 0;
   }
@@ -243,11 +260,11 @@ int ioctl(int fd, unsigned long int  request, ...) {
   case TIOCPKT_NOSTOP:
   case TIOCPKT_DOSTOP:
   case TIOCPKT_IOCTL: {
-    pty_debug("XXXX Ioctl not implemented : %lu\n", arg1);
+    upty_debug("upty: Ioctl not implemented : %lu\n", arg1);
     return 0;
   }
   default: {
-    pty_debug("XXXX Unknown ioctl : %lu\n", arg1);
+    upty_debug("upty: Unknown ioctl : %lu\n", arg1);
     return 0;
   }
   }
@@ -255,9 +272,9 @@ int ioctl(int fd, unsigned long int  request, ...) {
   struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, "upty", sizeof(addr.sun_path)-1);
+  strncpy(addr.sun_path, get_socket_path(), sizeof(addr.sun_path)-1);
   if (connect(ioctl_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-    perror("error connecting to ioctl");
+    perror("upty: error connecting to ioctl");
     return -1;
   }
   write(ioctl_fd, UPTY_VERSION, 4);
@@ -290,7 +307,7 @@ int ioctl(int fd, unsigned long int  request, ...) {
     write(ioctl_fd, &nbytes, 1);
     write(ioctl_fd, &arg, sizeof(arg));
     n = read(ioctl_fd, &arg, sizeof(arg));
-    pty_debug("XXXX Read for ioctl : %d\n", n);
+    upty_debug("upty: Read for ioctl : %d\n", n);
     *((int*)arg1) = arg;
     break;
   }
@@ -300,7 +317,7 @@ int ioctl(int fd, unsigned long int  request, ...) {
     write(ioctl_fd, &nbytes, 1);
     write(ioctl_fd, &arg, sizeof(arg));
     n = read(ioctl_fd, &arg, sizeof(arg));
-    pty_debug("XXXX Read for ioctl : %d\n", n);
+    upty_debug("upty: Read for ioctl : %d\n", n);
 
     *((char*)arg1) = arg;
     break;
@@ -311,7 +328,7 @@ int ioctl(int fd, unsigned long int  request, ...) {
     write(ioctl_fd, &nbytes, 1);
     write(ioctl_fd, &arg, sizeof(arg));
     n = read(ioctl_fd, &arg, sizeof(arg));
-    pty_debug("XXXX Read for ioctl : %d\n", n);
+    upty_debug("upty: Read for ioctl : %d\n", n);
 
     *((struct winsize*)arg1) = arg;
     break;
@@ -322,7 +339,7 @@ int ioctl(int fd, unsigned long int  request, ...) {
     write(ioctl_fd, &nbytes, 1);
     write(ioctl_fd, &arg, sizeof(arg));
     n = read(ioctl_fd, &arg, sizeof(arg));
-    pty_debug("XXXX Read for ioctl : %d\n", n);
+    upty_debug("upty: Read for ioctl : %d\n", n);
     *((struct termio*)arg1) = arg;
     break;
   }
@@ -332,25 +349,25 @@ int ioctl(int fd, unsigned long int  request, ...) {
     write(ioctl_fd, &nbytes, 1);
     write(ioctl_fd, &arg, sizeof(arg));
     n = read(ioctl_fd, &arg, sizeof(arg));
-    pty_debug("XXXX Read for ioctl : %d\n", n);
+    upty_debug("upty: Read for ioctl : %d\n", n);
     *((struct termios*)arg1) = arg;
     break;
   }
   case unknown_: {
-    pty_debug("XXXX Ioctl not implemented : %lu\n", arg1);
+    upty_debug("upty: Ioctl not implemented : %lu\n", arg1);
     return -1;
   }
   }
   int ret_code, err_no;
   n = read(ioctl_fd, &ret_code, sizeof(ret_code));
-  pty_debug("XXXX Read for ioctl : %d\n", n);
+  upty_debug("upty: Read for ioctl : %d\n", n);
   n = read(ioctl_fd, &err_no, sizeof(err_no));
-  pty_debug("XXXX Read for ioctl : %d\n", n);
+  upty_debug("upty: Read for ioctl : %d\n", n);
   close(ioctl_fd);
   if (ret_code < 0) {
     errno = err_no;
   }
-  pty_debug("XXXX Returning from ioctl : %d\n", ret_code);
+  upty_debug("upty: Returning from ioctl : %d\n", ret_code);
   return ret_code;
 }
 
@@ -358,7 +375,7 @@ int ioctl(int fd, unsigned long int  request, ...) {
 typedef int (*isatty_t)(int);
 int isatty(int fd) {
   int upty_num = get_upty_num(fd);
-  pty_debug("XXXX Intercepted isatty(%d)==%d\n", fd, upty_num);
+  upty_debug("upty: Intercepted isatty(%d)==%d\n", fd, upty_num);
   if (upty_num < 0) {
     return ((isatty_t)dlsym(RTLD_NEXT, "isatty"))(fd);
   }
@@ -371,7 +388,7 @@ int __isatty(int fd) {
 typedef char* (*ptsname_t)(int);
 char* ptsname (int fd) {
   int upty_num = get_upty_num(fd);
-  pty_debug("XXXX Intercepted ptsname(%d)==%d\n", fd, upty_num);
+  upty_debug("upty: Intercepted ptsname(%d)==%d\n", fd, upty_num);
   if (upty_num >= 0) {
     return "fake_upty";
   } else {
@@ -386,7 +403,7 @@ typedef int (*ptsname_r_t)(int, char*, size_t);
 
 int ptsname_r (int fd, char *buf, size_t buflen) {
   int upty_num = get_upty_num(fd);
-  pty_debug("XXXX Intercepted ptsname_r(%d)==%d\n", fd, upty_num);
+  upty_debug("upty: Intercepted ptsname_r(%d)==%d\n", fd, upty_num);
   if (upty_num >= 0) {
     strncpy(buf, "fake_upty", buflen);
     return 0;
@@ -398,7 +415,7 @@ int ptsname_r (int fd, char *buf, size_t buflen) {
 typedef int (*grantpt_t)(int);
 int grantpt (int fd) {
   int upty_num = get_upty_num(fd);
-  pty_debug("XXXX Intercepted grantpt(%d)==%d\n", fd, upty_num);
+  upty_debug("upty: Intercepted grantpt(%d)==%d\n", fd, upty_num);
   if (upty_num >= 0) {
     return 0;
   } else {
@@ -409,7 +426,7 @@ int grantpt (int fd) {
 typedef int (*unlockpt_t)(int);
 int unlockpt (int fd) {
   int upty_num = get_upty_num(fd);
-  pty_debug("XXXX Intercepted unlockpt(%d)==%d\n", fd, upty_num);
+  upty_debug("upty: Intercepted unlockpt(%d)==%d\n", fd, upty_num);
   if (upty_num >= 0) {
     return 0;
   } else {
@@ -420,7 +437,7 @@ int unlockpt (int fd) {
 typedef char* (*ttyname_t)(int);
 char* ttyname (int fd) {
   int upty_num = get_upty_num(fd);
-  pty_debug("XXXX Intercepted ttyname(%d)==%d\n", fd, upty_num);
+  upty_debug("upty: Intercepted ttyname(%d)==%d\n", fd, upty_num);
   if (upty_num >= 0) {
     return "fake_upty";
   } else {
@@ -432,7 +449,7 @@ char* ttyname (int fd) {
 typedef int (*dup_t)(int);
 int dup(int fd) {
   int upty_num = get_upty_num(fd);
-  pty_debug("XXXX Intercepted dup(%d)==%d\n", fd, upty_num);
+  upty_debug("upty: Intercepted dup(%d)==%d\n", fd, upty_num);
   int dup_fd = ((dup_t)dlsym(RTLD_NEXT, "dup"))(fd);
   if (upty_num >= 0) {
     if (dup_fd >= 0) {
@@ -444,7 +461,7 @@ int dup(int fd) {
 typedef int (*dup2_t)(int, int);
 int dup2(int fd, int newfd) {
   int upty_num = get_upty_num(fd);
-  pty_debug("XXXX Intercepted dup2(%d)==%d\n", fd, upty_num);
+  upty_debug("upty: Intercepted dup2(%d)==%d\n", fd, upty_num);
   int dup_fd = ((dup2_t)dlsym(RTLD_NEXT, "dup2"))(fd, newfd);
   if (upty_num >= 0) {
     if (dup_fd >= 0) {
@@ -456,7 +473,7 @@ int dup2(int fd, int newfd) {
 typedef int (*dup3_t)(int, int, int);
 int dup3(int fd, int newfd, int flags) {
   int upty_num = get_upty_num(fd);
-  pty_debug("XXXX Intercepted dup3(%d)==%d\n", fd, upty_num);
+  upty_debug("upty: Intercepted dup3(%d)==%d\n", fd, upty_num);
   int dup_fd = ((dup3_t)dlsym(RTLD_NEXT, "dup3"))(fd, newfd, flags);
   if (upty_num >= 0) {
     if (dup_fd >= 0) {
@@ -470,7 +487,7 @@ int dup3(int fd, int newfd, int flags) {
 typedef int (*open_t)(const char*, int);
 typedef int (*open3_t)(const char*, int, mode_t);
 int open(const char *pathname, int flags, ...) {
-  pty_debug("XXXX Intercepted open(%s,%x)\n", pathname, flags);
+  upty_debug("upty: Intercepted open(%s,%x)\n", pathname, flags);
   if (strcmp("/dev/ptmx", pathname) == 0) {
     return getpt();
   } else if (strncmp("/dev/pts/", pathname, 9) == 0) {
@@ -502,7 +519,7 @@ int openat(int dirfd, const char *pathname, int flags, mode_t mode);
 typedef int (*close_t)(int);
 int close(int fd) {
   int upty_num = get_upty_num(fd);
-  pty_debug("XXXX Intercepted close(%d)==%d\n", fd, upty_num);
+  upty_debug("upty: Intercepted close(%d)==%d\n", fd, upty_num);
   if (upty_num >= 0) {
     set_upty_num(fd, -1);
   }
@@ -512,9 +529,9 @@ int close(int fd) {
 typedef pid_t (*tcgetpgrp_t)(int);
 pid_t tcgetpgrp (int fd) {
   int upty_num = get_upty_num(fd);
-  pty_debug("XXXX Intercepted tcgetpgrp(%d)==%d\n", fd, upty_num);
+  upty_debug("upty: Intercepted tcgetpgrp(%d)==%d\n", fd, upty_num);
   if (upty_num >= 0) {
-    return (pid_t)5324; //XXXXX
+    //return (pid_t)5324; //XXXXX
   }
   return ((tcgetpgrp_t)dlsym(RTLD_NEXT, "tcgetpgrp"))(fd);
 }
