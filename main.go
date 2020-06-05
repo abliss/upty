@@ -150,7 +150,9 @@ func relayConnToFile(conn net.Conn, fd *vfs.FileDescription) {
 	}
 }
 func Recover() {
-	recover()
+	if err := recover(); err != nil {
+		log.Printf("upty:Recovering error: %s", err)
+	}
 }
 func fully(rw func ([]byte) (int, error), buf []byte) {
 	for len(buf) > 0 {
@@ -177,7 +179,7 @@ func handleIoctl(conn net.Conn) {
 	fully(conn.Read, hBuf[0:1])
 	nBytes := int(hBuf[0])
 	aBuf := make([]byte, nBytes)
-	fully(conn.Read,aBuf)
+	fully(conn.Read, aBuf)
 	log.Printf("upty:ioctl on num=%d, back=%s, req=%x, argT=%d, bytes=%d",
 		ptsNum, isBack, request, argT, nBytes)
 	// TODO: do ioctl
@@ -198,14 +200,30 @@ func handleIoctl(conn net.Conn) {
 		syscallArgs[2] = arch.SyscallArgument{uintptr(0)}
 	}
 	ret, err := fd.Impl().Ioctl(ctx, &usermem.BytesIO{aBuf}, syscallArgs)
+	var errno uint32
+	if err != nil {
+		errno = uint32(err.(syscall.Errno))
+	}
+	log.Printf("upty: ioctl aBuf on num=%d, back=%s, req=%x, argT=%d, bytes=%d" +
+		" ret=%d err=%d",
+		ptsNum, isBack, request, argT, nBytes, ret, errno)
 	fully(conn.Write, aBuf);
 	// return code
 	buf := make([]byte, 4)
+	log.Printf("upty: ioctl ret on num=%d, back=%s, req=%x, argT=%d, bytes=%d" +
+		" ret=%d err=%d",
+		ptsNum, isBack, request, argT, nBytes, ret, errno)
 	binary.LittleEndian.PutUint32(buf, uint32(ret))
 	fully(conn.Write, buf);
 	// errno
-	binary.LittleEndian.PutUint32(buf, uint32(err.(syscall.Errno)))
+	log.Printf("upty: ioctl err on num=%d, back=%s, req=%x, argT=%d, bytes=%d" +
+		" ret=%d err=%d",
+		ptsNum, isBack, request, argT, nBytes, ret, errno)
+	binary.LittleEndian.PutUint32(buf, errno)
 	fully(conn.Write, buf);
+	log.Printf("upty: ioctl done on num=%d, back=%s, req=%x, argT=%d, bytes=%d" +
+		" ret=%d err=%d",
+		ptsNum, isBack, request, argT, nBytes, ret, errno)
 }
 func acceptAndRelay(socketPath string) {
 	os.Remove(socketPath)

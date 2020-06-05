@@ -299,6 +299,8 @@ int ioctl(int fd, unsigned long int  request, ...) {
     nbytes = sizeof(arg1);
     write(ioctl_fd, &nbytes, 1);
     write(ioctl_fd, &arg1, sizeof(arg1));
+    n = read(ioctl_fd, &arg1, sizeof(arg1));
+    upty_debug("upty: Read for ioctl/%d : %d\n", arg_t, n);
     break;
   }
   case int_p: {
@@ -307,7 +309,7 @@ int ioctl(int fd, unsigned long int  request, ...) {
     write(ioctl_fd, &nbytes, 1);
     write(ioctl_fd, &arg, sizeof(arg));
     n = read(ioctl_fd, &arg, sizeof(arg));
-    upty_debug("upty: Read for ioctl : %d\n", n);
+    upty_debug("upty: Read for ioctl/%d : %d\n", arg_t, n);
     *((int*)arg1) = arg;
     break;
   }
@@ -317,7 +319,7 @@ int ioctl(int fd, unsigned long int  request, ...) {
     write(ioctl_fd, &nbytes, 1);
     write(ioctl_fd, &arg, sizeof(arg));
     n = read(ioctl_fd, &arg, sizeof(arg));
-    upty_debug("upty: Read for ioctl : %d\n", n);
+    upty_debug("upty: Read for ioctl/%d : %d\n", arg_t, n);
 
     *((char*)arg1) = arg;
     break;
@@ -328,7 +330,7 @@ int ioctl(int fd, unsigned long int  request, ...) {
     write(ioctl_fd, &nbytes, 1);
     write(ioctl_fd, &arg, sizeof(arg));
     n = read(ioctl_fd, &arg, sizeof(arg));
-    upty_debug("upty: Read for ioctl : %d\n", n);
+    upty_debug("upty: Read for ioctl/%d : %d\n", arg_t, n);
 
     *((struct winsize*)arg1) = arg;
     break;
@@ -339,7 +341,7 @@ int ioctl(int fd, unsigned long int  request, ...) {
     write(ioctl_fd, &nbytes, 1);
     write(ioctl_fd, &arg, sizeof(arg));
     n = read(ioctl_fd, &arg, sizeof(arg));
-    upty_debug("upty: Read for ioctl : %d\n", n);
+    upty_debug("upty: Read for ioctl/%d : %d\n", arg_t, n);
     *((struct termio*)arg1) = arg;
     break;
   }
@@ -349,7 +351,7 @@ int ioctl(int fd, unsigned long int  request, ...) {
     write(ioctl_fd, &nbytes, 1);
     write(ioctl_fd, &arg, sizeof(arg));
     n = read(ioctl_fd, &arg, sizeof(arg));
-    upty_debug("upty: Read for ioctl : %d\n", n);
+    upty_debug("upty: Read for ioctl/%d : %d\n", arg_t, n);
     *((struct termios*)arg1) = arg;
     break;
   }
