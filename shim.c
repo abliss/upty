@@ -282,8 +282,8 @@ int ioctl(int fd, unsigned long int  request, ...) {
 
   int basenum = upty_num / 2;
   write(ioctl_fd, &basenum, 4);
-  char is_master = upty_num % 2 ? 1 : 0; 
-  write(ioctl_fd, &is_master, 1);
+  char is_back = upty_num % 2 ? 0 : 1;
+  write(ioctl_fd, &is_back, 1);
   write(ioctl_fd, &request, sizeof(request));
   char arg_t_c = (char)arg_t;
   write(ioctl_fd, &arg_t_c, 1);

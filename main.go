@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime/debug"
 	"time"
 	"syscall"
 	"gvisor.dev/gvisor/pkg/abi/linux"
@@ -84,6 +85,7 @@ func getBackFd() (*vfs.FileDescription, uint32, error) {
 	if (ptsNum >= uint32(len(backFds))) {
 		log.Fatalf("too many backfds");
 	}
+	log.Printf("upty: Setting backFds[%d]=%s", ptsNum, fd)
 	backFds[ptsNum] = fd
 	return fd, ptsNum, nil
 }
@@ -95,6 +97,7 @@ func getFrontFd(ptsNum uint32) (*vfs.FileDescription, error) {
 	if (ptsNum >= uint32(len(frontFds))) {
 		log.Fatalf("too many frontfds");
 	}
+	log.Printf("upty: Setting frontFds[%d]=%s", ptsNum, fd)
 	frontFds[ptsNum] = fd
 	return fd, nil
 }
@@ -151,7 +154,7 @@ func relayConnToFile(conn net.Conn, fd *vfs.FileDescription) {
 }
 func Recover() {
 	if err := recover(); err != nil {
-		log.Printf("upty:Recovering error: %s", err)
+		log.Printf("upty:Recovering error: %s\n%s\n", err, string(debug.Stack()))
 	}
 }
 func fully(rw func ([]byte) (int, error), buf []byte) {
@@ -188,6 +191,9 @@ func handleIoctl(conn net.Conn) {
 		fd = backFds[ptsNum]
 	} else {
 		fd = frontFds[ptsNum]
+	}
+	if fd == nil {
+		panic("fd not ok! ")
 	}
 	var syscallArgs arch.SyscallArguments
 	syscallArgs[0] = arch.SyscallArgument{uintptr(16)} // ioctl
