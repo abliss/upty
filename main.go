@@ -106,8 +106,8 @@ func (this relayer) Callback(e *waiter.Entry) {
 	this.f()
 }
 func relayFileToConn(fd *vfs.FileDescription, conn net.Conn) {
-	defer Recover()
 	buf := make([]byte, 4096)
+	var e  waiter.Entry
 	dump := func() {
 		n, err := fd.Read(ctx, usermem.BytesIOSequence(buf), vfs.ReadOptions{})
 		if err != nil && err != syserror.ErrWouldBlock {
@@ -119,10 +119,9 @@ func relayFileToConn(fd *vfs.FileDescription, conn net.Conn) {
 			m = 40;
 		}
 		log.Printf("upty:Read %d from fd: %s",n, buf[0:m])
-		defer Recover()
+		defer RecoverAnd(func() {fd.EventUnregister(&e)})
 		fully(conn.Write, buf[0:n])
 	}
-	var e  waiter.Entry
 	e.Callback = &relayer{dump}
 	fd.EventRegister(&e, waiter.EventIn)
 	dump()
@@ -157,6 +156,13 @@ func Recover() {
 		log.Printf("upty:Recovering error: %s\n%s\n", err, string(debug.Stack()))
 	}
 }
+func RecoverAnd(f func()) {
+	if err := recover(); err != nil {
+		log.Printf("upty:Recovering error: %s\n%s\n", err, string(debug.Stack()))
+		f()
+	}
+}
+
 func fully(rw func ([]byte) (int, error), buf []byte) {
 	for len(buf) > 0 {
 		n, err := rw(buf);
@@ -205,7 +211,18 @@ func handleIoctl(conn net.Conn) {
 		// for all others, the arg is a pointer to the beginning of buf
 		syscallArgs[2] = arch.SyscallArgument{uintptr(0)}
 	}
-	ret, err := fd.Impl().Ioctl(ctx, &usermem.BytesIO{aBuf}, syscallArgs)
+
+	var ret uintptr;
+	var err error;
+	switch(request) {
+	case linux.TIOCSCTTY:
+	case linux.TIOCGPGRP:
+	case linux.TIOCNOTTY:
+	case linux.TIOCSPGRP:
+		log.Printf("TODO: cannot handle process ioctls yet!")
+	default:
+		ret, err = fd.Impl().Ioctl(ctx, &usermem.BytesIO{aBuf}, syscallArgs)
+	}
 	var errno uint32
 	if err != nil {
 		errno = uint32(err.(syscall.Errno))
