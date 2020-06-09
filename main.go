@@ -101,14 +101,23 @@ func getFrontFd(ptsNum uint32) (*vfs.FileDescription, error) {
 	frontFds[ptsNum] = fd
 	return fd, nil
 }
-type relayer struct {f func()}
-func (this relayer) Callback(e *waiter.Entry) {
-	this.f()
+type callback struct {cb func()}
+func (this callback) Callback(e *waiter.Entry) {
+	this.cb()
+}
+func newWaiterEntry(cb func()) waiter.Entry {
+	var e waiter.Entry
+	e.Callback = &callback{cb}
+	return e
 }
 func relayFileToConn(fd *vfs.FileDescription, conn net.Conn) {
 	buf := make([]byte, 4096)
-	var e  waiter.Entry
-	dump := func() {
+	wakeUp := make(chan int, 4096)
+	e := newWaiterEntry(func(){wakeUp<-0})
+	fd.EventRegister(&e, waiter.EventIn)
+	f := newWaiterEntry(func(){close(wakeUp)})
+	fd.EventRegister(&f, waiter.EventHUp)
+	for _ = range wakeUp {
 		n, err := fd.Read(ctx, usermem.BytesIOSequence(buf), vfs.ReadOptions{})
 		if err != nil && err != syserror.ErrWouldBlock {
 			log.Printf("upty: Error reading %d from fd: %s", n, err)
@@ -119,12 +128,11 @@ func relayFileToConn(fd *vfs.FileDescription, conn net.Conn) {
 			m = 40;
 		}
 		log.Printf("upty:Read %d from fd: %s",n, buf[0:m])
-		defer RecoverAnd(func() {fd.EventUnregister(&e)})
+		defer RecoverAnd(func() {
+			fd.EventUnregister(&e)
+		})
 		fully(conn.Write, buf[0:n])
 	}
-	e.Callback = &relayer{dump}
-	fd.EventRegister(&e, waiter.EventIn)
-	dump()
 }
 func relayConnToFile(conn net.Conn, fd *vfs.FileDescription) {
 	buf := make([]byte, 4096)
@@ -191,7 +199,6 @@ func handleIoctl(conn net.Conn) {
 	fully(conn.Read, aBuf)
 	log.Printf("upty:ioctl on num=%d, back=%s, req=%x, argT=%d, bytes=%d",
 		ptsNum, isBack, request, argT, nBytes)
-	// TODO: do ioctl
 	var fd *vfs.FileDescription
 	if (isBack) {
 		fd = backFds[ptsNum]
