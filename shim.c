@@ -95,6 +95,7 @@ int getpt() {
     perror("upty: Bad read on connect");
     return -1;
   }
+  fcntl(fd, F_SETFL, O_NONBLOCK);
   set_upty_num(fd, pty_num * 2);
   upty_debug("upty: Returning fake back %d=%d\n", fd, pty_num);
   return fd;
@@ -113,6 +114,7 @@ int get_front_fd(int back_upty_num) {
   write(front_fd, UPTY_VERSION, 4);
   write(front_fd, &UPTY_FRONT, 1);
   write(front_fd, &back_upty_num, 4);
+  fcntl(front_fd, F_SETFL, O_NONBLOCK);
   set_upty_num(front_fd, back_upty_num * 2 + 1);
   upty_debug("upty: Returning fake front %d\n", front_fd);
   return front_fd;
@@ -138,6 +140,13 @@ int ioctl(int fd, unsigned long int  request, ...) {
   }
   enum ioctl_arg_t arg_t = unknown_;
   switch(request) {
+  case FIONREAD: {// aka TIOCINQ
+    // This asks how many bytes are available to be read. If we forward this to
+    // gvisor, it will report 0, because the line_discipline's queue has already
+    // been drained and put into the socket queue. So just let this request go
+    // through to the socket itself.
+    return ioctl1(fd, request, arg1);
+  }
   case TIOCGPTPEER: {
     return get_front_fd(upty_num / 2);
   }
@@ -195,7 +204,6 @@ int ioctl(int fd, unsigned long int  request, ...) {
       arg_t = void_;// void
       break;
     }
-  case FIONREAD: // aka TIOCINQ
   case TIOCOUTQ:
   case TIOCSETD:
   case TIOCGETD:
@@ -494,7 +502,7 @@ int open(const char *pathname, int flags, ...) {
     return getpt();
   } else if (strncmp("/dev/pts/", pathname, 9) == 0) {
     int pty_num = atoi(pathname + 9);
-    if (pty_num <= 0) {
+    if (pty_num < 0) {
       errno = ENOENT;
       return -1;
     }

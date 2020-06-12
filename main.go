@@ -127,7 +127,7 @@ func relayFileToConn(fd *vfs.FileDescription, conn net.Conn) {
 		if m > 40 {
 			m = 40;
 		}
-		log.Printf("upty:Read %d from fd: %s",n, buf[0:m])
+		//log.Printf("upty:Read %d from fd: %s",n, buf[0:m])
 		defer RecoverAnd(func() {
 			fd.EventUnregister(&e)
 		})
@@ -151,7 +151,7 @@ func relayConnToFile(conn net.Conn, fd *vfs.FileDescription) {
 		if m > 40 {
 			m = 40;
 		}
-		log.Printf("upty:Read %d from conn: %s",n, buf[0:m])
+		//log.Printf("upty:Read %d from conn: %s",n, buf[0:m])
 		fully(func (buf []byte) (int, error) {
 			n64, err2 := fd.Write(ctx, usermem.BytesIOSequence(buf), 
 				vfs.WriteOptions{})
@@ -234,21 +234,12 @@ func handleIoctl(conn net.Conn) {
 	if err != nil {
 		errno = uint32(err.(syscall.Errno))
 	}
-	log.Printf("upty: ioctl aBuf on num=%d, back=%s, req=%x, argT=%d, bytes=%d" +
-		" ret=%d err=%d",
-		ptsNum, isBack, request, argT, nBytes, ret, errno)
 	fully(conn.Write, aBuf);
 	// return code
 	buf := make([]byte, 4)
-	log.Printf("upty: ioctl ret on num=%d, back=%s, req=%x, argT=%d, bytes=%d" +
-		" ret=%d err=%d",
-		ptsNum, isBack, request, argT, nBytes, ret, errno)
 	binary.LittleEndian.PutUint32(buf, uint32(ret))
 	fully(conn.Write, buf);
 	// errno
-	log.Printf("upty: ioctl err on num=%d, back=%s, req=%x, argT=%d, bytes=%d" +
-		" ret=%d err=%d",
-		ptsNum, isBack, request, argT, nBytes, ret, errno)
 	binary.LittleEndian.PutUint32(buf, errno)
 	fully(conn.Write, buf);
 	log.Printf("upty: ioctl done on num=%d, back=%s, req=%x, argT=%d, bytes=%d" +
