@@ -14,8 +14,7 @@ To try it out:
    `go build main.go && (P=$PWD;cd;$P/main&)`
 3. Build the `shim.so`: `make`.
 4. Run a simple test with `script` and python: `make test`
-5. Run your favorite pty-using binary: `LD_PRELOAD=$PWD/shim.so tmux` (changing 
-   CWD not yet supported)
+5. Run your favorite pty-using binary: `LD_PRELOAD=$PWD/shim.so tmux`
 
 # Design
 The idea is to use an `LD_PRELOAD` shim to intercept calls to pty-related glibc
@@ -40,10 +39,10 @@ pretty much mostly work.
 
 - [x] `script`
 - [x] `tmux`
-- [x] `ttyd`
+- [x] `ttyd` (with patches)
 - [35/58] `gvisor` test case `//test/syscalls/linux:pty_test`
 - [     ] `screen` (only non-setuid mode is contemplated)
-- [     ] `emacs`
+- [X] `emacs` (with `UPTY_NUM_DEV_TTY=1`)
 - [     ] `xterm`
 - [     ] `rxvt`
 - [     ] `asciinema`
