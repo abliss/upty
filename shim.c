@@ -507,6 +507,8 @@ int open(const char *pathname, int flags, ...) {
       return -1;
     }
     return get_front_fd(pty_num);
+  } else if (strcmp("/dev/tty", pathname) == 0 && getenv("UPTY_NUM_DEV_TTY")) {
+    return get_front_fd(atoi(getenv("UPTY_NUM_DEV_TTY")) / 2);
   }
   va_list ap;
   va_start(ap, flags);
